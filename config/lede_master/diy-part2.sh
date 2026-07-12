@@ -56,10 +56,3 @@ git clone -b main https://github.com/ophub/luci-app-amlogic.git package/luci-app
 # git apply ../config/patches/{0001*,0002*}.patch --directory=feeds/luci
 #
 # ------------------------------- Other ends -------------------------------
-
-# 更新并安装所有 feeds (包括新添加的 lienol 源)
-./scripts/feeds update -a
-./scripts/feeds install -a
-
-# 在 .config 文件中启用你想要的插件，例如启用 passwall
-echo "CONFIG_PACKAGE_luci-app-passwall=y" >> .config
