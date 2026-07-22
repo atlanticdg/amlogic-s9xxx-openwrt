@@ -7880,6 +7880,3 @@ CONFIG_PACKAGE_uuidgen=y
 # CONFIG_PACKAGE_fontconfig is not set
 # end of Font-Utils
 # end of Xorg
-
-CONFIG_PACKAGE_kmod-rtw88=y
-CONFIG_PACKAGE_rtw88-8822be=y
