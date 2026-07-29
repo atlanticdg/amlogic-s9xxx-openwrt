@@ -48,6 +48,17 @@ fi
 
 # ------------------------------- Other started -------------------------------
 #
+# === kenzok8 small-package 防冲突处理（begin）===
+# 删除 feeds 中可能与 kenzo/small 源冲突的包
+rm -rf feeds/luci/applications/luci-app-mosdns
+rm -rf feeds/packages/net/{alist,adguardhome,mosdns,xray*,v2ray*,sing*,smartdns}
+rm -rf feeds/packages/utils/v2dat
+
+# 替换 Golang 为 1.26 版本（small-package 中的插件依赖此版本）
+rm -rf feeds/packages/lang/golang
+git clone https://github.com/kenzok8/golang -b 1.26 feeds/packages/lang/golang
+# === kenzok8 small-package 防冲突处理（end）===
+#
 # Add luci-app-amlogic
 rm -rf package/luci-app-amlogic
 git clone -b main https://github.com/ophub/luci-app-amlogic.git package/luci-app-amlogic
