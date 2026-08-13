@@ -360,17 +360,43 @@ jobs:
 
     name: build-${{ matrix.branch }}
 
-    env:
-      FEEDS_CONF: config/${{ matrix.branch }}/feeds.conf.default
-      CONFIG_FILE: config/${{ matrix.branch }}/config
-      DIY_P1_SH: config/${{ matrix.branch }}/diy-part1.sh
-      DIY_P2_SH: config/${{ matrix.branch }}/diy-part2.sh
+#    env:
+#      FEEDS_CONF: config/${{ matrix.branch }}/feeds.conf.default
+#      CONFIG_FILE: config/${{ matrix.branch }}/config
+#      DIY_P1_SH: config/${{ matrix.branch }}/diy-part1.sh
+#      DIY_P2_SH: config/${{ matrix.branch }}/diy-part2.sh
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Resolve config directory
+        id: resolve-config
+        run: |
+          BRANCH="${{ matrix.branch }}"
+          if [[ -d "config/${BRANCH}" ]]; then
+            CONFIG_DIR="config/${BRANCH}"
+          else
+            REPO_NAME="${BRANCH%_*}"
+            if [[ -d "config/${REPO_NAME}_main" ]]; then
+              CONFIG_DIR="config/${REPO_NAME}_main"
+            elif [[ -d "config/${REPO_NAME}_master" ]]; then
+              CONFIG_DIR="config/${REPO_NAME}_master"
+            else
+              echo "Error: No config directory found for branch '${BRANCH}'"
+              echo "Searched: config/${BRANCH}, config/${REPO_NAME}_main, config/${REPO_NAME}_master"
+              ls -la config/ || true
+              exit 1
+            fi
+          fi
+          echo "CONFIG_DIR=${CONFIG_DIR}" >> ${GITHUB_ENV}
+          echo "FEEDS_CONF=${CONFIG_DIR}/feeds.conf.default" >> ${GITHUB_ENV}
+          echo "CONFIG_FILE=${CONFIG_DIR}/config" >> ${GITHUB_ENV}
+          echo "DIY_P1_SH=${CONFIG_DIR}/diy-part1.sh" >> ${GITHUB_ENV}
+          echo "DIY_P2_SH=${CONFIG_DIR}/diy-part2.sh" >> ${GITHUB_ENV}
+          echo "Resolved config dir: ${CONFIG_DIR}"
 
       - name: Initialize the build environment
         id: init
