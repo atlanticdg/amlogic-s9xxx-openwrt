@@ -448,12 +448,12 @@ jobs:
         if: ${{ steps.init.outputs.status == 'success' && !cancelled() }}
         run: |
           # Determine the OpenWrt source code repository
-          if [[ "${{ matrix.branch }}" =~ ^openwrt ]]; then
-              REPO_URL="https://github.com/openwrt/openwrt"
-          elif [[ "${{ matrix.branch }}" =~ ^lede ]]; then
-              REPO_URL="https://github.com/coolsnowwolf/lede"
-          elif [[ "${{ matrix.branch }}" =~ ^immortalwrt ]]; then
-              REPO_URL="https://github.com/immortalwrt/immortalwrt"
+            if [[ "${{ matrix.branch }}" =~ ^immortalwrt ]]; then
+                REPO_URL="https://github.com/immortalwrt/immortalwrt"
+            elif [[ "${{ matrix.branch }}" =~ ^openwrt ]]; then
+                REPO_URL="https://github.com/openwrt/openwrt"
+            elif [[ "${{ matrix.branch }}" =~ ^lede ]]; then
+                REPO_URL="https://github.com/coolsnowwolf/lede"
           else
               echo "Error: Unknown source code repository."
               exit 1
