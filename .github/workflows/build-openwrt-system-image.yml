@@ -15,6 +15,7 @@ on:
         default: "all"
         type: choice
         options:
+          - all
           - openwrt_v25.12.5
           - openwrt_openwrt-25.12
           - immortalwrt_v25.12.1
