@@ -15,8 +15,8 @@ on:
         default: "all"
         type: choice
         options:
-          - openwrt_25.12.5
-          - immortalwrt_25.12.1
+          - openwrt_v25.12.5
+          - immortalwrt_v25.12.1
       openwrt_board:
         description: "Select device board"
         required: false
