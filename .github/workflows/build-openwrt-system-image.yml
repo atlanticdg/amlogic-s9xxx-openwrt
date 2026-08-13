@@ -16,9 +16,11 @@ on:
         type: choice
         options:
           - all
+          - openwrt_openwrt-25.12
           - openwrt_main
           - lede_master
           - immortalwrt_master
+          - immortalwrt_openwrt-25.12 
       openwrt_board:
         description: "Select device board"
         required: false
@@ -339,7 +341,7 @@ jobs:
         id: set-matrix
         run: |
           if [[ "${{ inputs.source_branch }}" == "all" ]]; then
-            MATRIX='{"include":[{"branch":"openwrt_main"},{"branch":"lede_master"},{"branch":"immortalwrt_master"}]}'
+            MATRIX='{"include":[{"branch":"openwrt_openwrt-25.12"},{"branch":"lede_master"},{"branch":"immortalwrt_openwrt-25.12"}]}'
           else
             MATRIX='{"include":[{"branch":"${{ inputs.source_branch }}"}]}'
           fi
