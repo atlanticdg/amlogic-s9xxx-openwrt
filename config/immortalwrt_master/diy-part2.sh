@@ -64,3 +64,17 @@ git clone -b main https://github.com/ophub/luci-app-amlogic.git package/luci-app
 # git apply ../config/patches/{0001*,0002*}.patch --directory=feeds/luci
 #
 # ------------------------------- Other ends -------------------------------
+
+# ===== 禁用 Rust（CI 产物 404，且 OpenClash/PassWall 不需要） =====
+echo "Disabling Rust packages..."
+sed -i '/CONFIG_PACKAGE_rust/d' .config
+sed -i '/CONFIG_PACKAGE_rustc/d' .config
+sed -i '/CONFIG_PACKAGE_cargo/d' .config
+sed -i '/CONFIG_PACKAGE_rust-std/d' .config
+sed -i '/CONFIG_PACKAGE_rust-src/d' .config
+sed -i '/CONFIG_PACKAGE_llvm-tools/d' .config
+sed -i '/CONFIG_PACKAGE_maturin/d' .config
+echo '# Rust disabled (CI artifacts unavailable)' >> .config
+echo '# CONFIG_PACKAGE_rust is not set' >> .config
+echo '# CONFIG_PACKAGE_rustc is not set' >> .config
+echo '# CONFIG_PACKAGE_cargo is not set' >> .config
