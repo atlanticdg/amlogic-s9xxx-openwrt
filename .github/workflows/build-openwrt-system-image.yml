@@ -74,6 +74,7 @@ on:
           - firefly-itx-3588j
           - firefly-jd4
           - firefly-rk3399
+          - rockdd
           - fmx1-pro
           - fmx1-pro-b
           - gea-6319
