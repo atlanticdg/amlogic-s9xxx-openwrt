@@ -17,7 +17,7 @@ on:
         options:
           - all
           - openwrt_main
-          - openwrt_main-25.12
+          - openwrt_openwrt-25.12
           - lede_master
           - immortalwrt_master
           - immortalwrt_openwrt-25.12
