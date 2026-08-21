@@ -65,16 +65,39 @@ git clone -b main https://github.com/ophub/luci-app-amlogic.git package/luci-app
 #
 # ------------------------------- Other ends -------------------------------
 
-# ===== 禁用 Rust（CI 产物 404，且 OpenClash/PassWall 不需要） =====
-echo "Disabling Rust packages..."
+# ===== 禁用 Rust（CI 产物 404，用桩文件替代） =====
+echo "Disabling Rust by stubbing Makefiles..."
+
+cat > feeds/packages/lang/rust/Makefile << 'RUSTSTUB'
+include $(TOPDIR)/rules.mk
+PKG_NAME:=rust
+PKG_VERSION:=0.0.0
+PKG_RELEASE:=1
+PKG_BUILD_DEPENDS:=
+include $(INCLUDE_DIR)/package.mk
+RUSTSTUB
+
+# 同时处理依赖 rust 的包
+for pkg in maturin uv; do
+    found=$(find feeds/packages -name "$pkg" -type d 2>/dev/null | head -1)
+    if [ -n "$found" ]; then
+        cat > "$found/Makefile" << 'DEPSTUB'
+include $(TOPDIR)/rules.mk
+PKG_NAME:=stub
+PKG_VERSION:=0.0.0
+PKG_RELEASE:=1
+PKG_BUILD_DEPENDS:=
+include $(INCLUDE_DIR)/package.mk
+DEPSTUB
+    fi
+done
+
+# 清理 .config 中的 rust 相关项
 sed -i '/CONFIG_PACKAGE_rust/d' .config
 sed -i '/CONFIG_PACKAGE_rustc/d' .config
 sed -i '/CONFIG_PACKAGE_cargo/d' .config
-sed -i '/CONFIG_PACKAGE_rust-std/d' .config
-sed -i '/CONFIG_PACKAGE_rust-src/d' .config
-sed -i '/CONFIG_PACKAGE_llvm-tools/d' .config
 sed -i '/CONFIG_PACKAGE_maturin/d' .config
-echo '# Rust disabled (CI artifacts unavailable)' >> .config
+sed -i '/CONFIG_PACKAGE_uv/d' .config
 echo '# CONFIG_PACKAGE_rust is not set' >> .config
 echo '# CONFIG_PACKAGE_rustc is not set' >> .config
 echo '# CONFIG_PACKAGE_cargo is not set' >> .config
