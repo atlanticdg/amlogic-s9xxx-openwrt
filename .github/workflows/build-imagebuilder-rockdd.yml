@@ -403,22 +403,54 @@ jobs:
           fi
 
           # ImmortalWrt 自带 OpenClash 和 PassWall
+          # 注意：luci-i18n-openclash-zh-cn 在官方仓库中不存在，
+          #       OpenClash 中文翻译已内置在 luci-app-openclash 包中
           if [[ "${{ steps.ib_config.outputs.has_openclash }}" == "yes" ]]; then
-            PACKAGES="${PACKAGES} luci-app-openclash luci-i18n-openclash-zh-cn"
+            PACKAGES="${PACKAGES} luci-app-openclash"
           fi
           if [[ "${{ steps.ib_config.outputs.has_passwall }}" == "yes" ]]; then
             PACKAGES="${PACKAGES} luci-app-passwall luci-i18n-passwall-zh-cn"
           fi
 
+          # armsr generic profile 会自动包含大量其他平台 kmod
+          # 用 DISABLED_PACKAGES 排除不需要的，减小镜像体积
+          DISABLED_PKGS="\
+            kmod-amazon-ena \
+            kmod-atlantic \
+            kmod-bcmgenet \
+            kmod-dwmac-imx \
+            kmod-dwmac-sun8i \
+            kmod-e1000e \
+            kmod-fsl-dpaa1-net \
+            kmod-fsl-dpaa2-net \
+            kmod-fsl-enetc-net \
+            kmod-fsl-fec \
+            kmod-gpio-pca953x \
+            kmod-i2c-mux-pca954x \
+            kmod-mvneta \
+            kmod-mvpp2 \
+            kmod-octeontx2-net \
+            kmod-phy-aquantia \
+            kmod-phy-broadcom \
+            kmod-phy-marvell \
+            kmod-phy-marvell-10g \
+            kmod-phy-smsc \
+            kmod-renesas-net-avb \
+          "
+
           echo ""
           echo "=== PACKAGES list ==="
           echo "${PACKAGES}"
+          echo ""
+          echo "=== DISABLED_PACKAGES list ==="
+          echo "${DISABLED_PKGS}"
           echo ""
 
           echo "=== Building image ==="
           make image \
             PROFILE="generic" \
             PACKAGES="${PACKAGES}" \
+            DISABLED_PACKAGES="${DISABLED_PKGS}" \
             FILES="../custom-files/" \
             BIN_DIR="../output" \
             ROOTFS_PARTSIZE="${{ inputs.rootfs_size }}"
