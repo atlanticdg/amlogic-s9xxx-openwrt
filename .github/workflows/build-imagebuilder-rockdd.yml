@@ -1,0 +1,540 @@
+#==========================================================================
+# Build OpenWrt using ImageBuilder for rockdd
+# 支持多发行版：ImmortalWrt / OpenWrt
+# 支持自动检测最新稳定版和内核版本
+# 放置到 atlanticdg/amlogic-s9xxx-openwrt/.github/workflows/
+#==========================================================================
+
+name: Build OpenWrt using ImageBuilder for rockdd
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "选择 OpenWrt 发行版"
+        required: true
+        default: "immortalwrt"
+        type: choice
+        options:
+          - "immortalwrt"
+          - "openwrt"
+      ib_version:
+        description: "ImageBuilder 版本（latest = 自动检测最新稳定版）"
+        required: true
+        default: "latest"
+        type: choice
+        options:
+          - "latest"
+          - "25.12.1"
+          - "25.12.0"
+          - "24.10.6"
+      kernel_version:
+        description: "内核版本（auto = 从 ImageBuilder 自动检测，必须与 atlanticdg/kernel 编译的一致）"
+        required: false
+        default: "auto"
+        type: choice
+        options:
+          - "auto"
+          - "6.12.y"
+          - "6.6.y"
+          - "6.18.y"
+      rootfs_size:
+        description: "rootfs 分区大小 (MB)"
+        required: false
+        default: "1024"
+        type: string
+      openwrt_ip:
+        description: "路由器 LAN IP"
+        required: false
+        default: "192.168.1.1"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # ============================================================
+      # Step 1: Checkout
+      # ============================================================
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ============================================================
+      # Step 2: 安装依赖
+      # ============================================================
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y squashfs-tools zstd qemu-utils
+
+      # ============================================================
+      # Step 3: 自动检测最新版本（如果选择了 latest）
+      # ============================================================
+      - name: Detect latest stable version
+        id: detect_version
+        run: |
+          SOURCE="${{ inputs.source }}"
+          IB_VERSION_INPUT="${{ inputs.ib_version }}"
+
+          if [[ "${IB_VERSION_INPUT}" != "latest" ]]; then
+            echo "ib_version=${IB_VERSION_INPUT}" >> ${GITHUB_OUTPUT}
+            echo "Using user-specified version: ${IB_VERSION_INPUT}"
+            exit 0
+          fi
+
+          echo "Auto-detecting latest stable version for ${SOURCE}..."
+
+          case "${SOURCE}" in
+            immortalwrt)
+              RELEASES_URL="https://downloads.immortalwrt.org/releases/"
+              PREFIX="immortalwrt"
+              ;;
+            openwrt)
+              RELEASES_URL="https://downloads.openwrt.org/releases/"
+              PREFIX="openwrt"
+              ;;
+            *)
+              echo "Unknown source: ${SOURCE}"
+              exit 1
+              ;;
+          esac
+
+          # 抓取 releases 页面，解析版本目录
+          # 目录列表格式: <a href="25.12.1/">25.12.1/</a>
+          LATEST_VERSION=$(wget -q -O - "${RELEASES_URL}" | \
+            grep -oP 'href="\d+\.\d+\.\d+/"' | \
+            sed 's/href="//;s/\/"//' | \
+            grep -v -- '-rc' | \
+            grep -v -- 'SNAPSHOT' | \
+            sort -t. -k1,1n -k2,2n -k3,3n | \
+            tail -1)
+
+          if [[ -z "${LATEST_VERSION}" ]]; then
+            echo "ERROR: Failed to detect latest stable version from ${RELEASES_URL}"
+            exit 1
+          fi
+
+          echo "Detected latest stable version: ${LATEST_VERSION}"
+          echo "ib_version=${LATEST_VERSION}" >> ${GITHUB_OUTPUT}
+
+      # ============================================================
+      # Step 4: 确定 ImageBuilder URL 和配置参数
+      # ============================================================
+      - name: Configure ImageBuilder source
+        id: ib_config
+        run: |
+          SOURCE="${{ inputs.source }}"
+          IB_VERSION="${{ steps.detect_version.outputs.ib_version }}"
+
+          echo "=== Configuration ==="
+          echo "Source:  ${SOURCE}"
+          echo "Version: ${IB_VERSION}"
+
+          case "${SOURCE}" in
+            immortalwrt)
+              case "${IB_VERSION}" in
+                25.12.*)
+                  IB_URL="https://downloads.immortalwrt.org/releases/${IB_VERSION}/targets/armsr/armv8/immortalwrt-imagebuilder-${IB_VERSION}-armsr-armv8.Linux-x86_64.tar.zst"
+                  IB_PREFIX="immortalwrt"
+                  PKG_MANAGER="apk"
+                  HAS_OPENCLASH="yes"
+                  HAS_PASSWALL="yes"
+                  ;;
+                24.10.*|23.05.*)
+                  IB_URL="https://downloads.immortalwrt.org/releases/${IB_VERSION}/targets/armsr/armv8/immortalwrt-imagebuilder-${IB_VERSION}-armsr-armv8.Linux-x86_64.tar.zst"
+                  IB_PREFIX="immortalwrt"
+                  PKG_MANAGER="opkg"
+                  HAS_OPENCLASH="yes"
+                  HAS_PASSWALL="yes"
+                  ;;
+                *)
+                  echo "ImmortalWrt 版本 ${IB_VERSION} 不支持"
+                  exit 1
+                  ;;
+              esac
+              ;;
+            openwrt)
+              case "${IB_VERSION}" in
+                25.12.*)
+                  IB_URL="https://downloads.openwrt.org/releases/${IB_VERSION}/targets/armsr/armv8/openwrt-imagebuilder-${IB_VERSION}-armsr-armv8.Linux-x86_64.tar.zst"
+                  IB_PREFIX="openwrt"
+                  PKG_MANAGER="apk"
+                  HAS_OPENCLASH="no"
+                  HAS_PASSWALL="no"
+                  ;;
+                24.10.*|23.05.*)
+                  IB_URL="https://downloads.openwrt.org/releases/${IB_VERSION}/targets/armsr/armv8/openwrt-imagebuilder-${IB_VERSION}-armsr-armv8.Linux-x86_64.tar.zst"
+                  IB_PREFIX="openwrt"
+                  PKG_MANAGER="opkg"
+                  HAS_OPENCLASH="no"
+                  HAS_PASSWALL="no"
+                  ;;
+                *)
+                  echo "OpenWrt 版本 ${IB_VERSION} 不支持"
+                  exit 1
+                  ;;
+              esac
+              ;;
+            *)
+              echo "未知发行版: ${SOURCE}"
+              exit 1
+              ;;
+          esac
+
+          echo "ib_url=${IB_URL}" >> ${GITHUB_OUTPUT}
+          echo "ib_prefix=${IB_PREFIX}" >> ${GITHUB_OUTPUT}
+          echo "pkg_manager=${PKG_MANAGER}" >> ${GITHUB_OUTPUT}
+          echo "has_openclash=${HAS_OPENCLASH}" >> ${GITHUB_OUTPUT}
+          echo "has_passwall=${HAS_PASSWALL}" >> ${GITHUB_OUTPUT}
+
+          echo "URL:          ${IB_URL}"
+          echo "Pkg manager:  ${PKG_MANAGER}"
+          echo "OpenClash:    ${HAS_OPENCLASH}"
+          echo "PassWall:     ${HAS_PASSWALL}"
+
+      # ============================================================
+      # Step 5: 下载 ImageBuilder
+      # ============================================================
+      - name: Download ImageBuilder
+        run: |
+          IB_URL="${{ steps.ib_config.outputs.ib_url }}"
+          echo "Downloading: ${IB_URL}"
+          wget -q "${IB_URL}" -O ib.tar.zst
+          tar --zstd -xf ib.tar.zst
+          IB_DIR=$(find . -maxdepth 1 -type d -name "*-imagebuilder-*" | head -1)
+          echo "IB_DIR=${IB_DIR}" >> ${GITHUB_ENV}
+          echo "ImageBuilder directory: ${IB_DIR}"
+
+      # ============================================================
+      # Step 6: 自动检测内核版本（如果选择了 auto）
+      # ============================================================
+      - name: Detect kernel version
+        id: detect_kernel
+        run: |
+          KERNEL_INPUT="${{ inputs.kernel_version }}"
+
+          if [[ "${KERNEL_INPUT}" != "auto" ]]; then
+            echo "kernel_version=${KERNEL_INPUT}" >> ${GITHUB_OUTPUT}
+            echo "Using user-specified kernel: ${KERNEL_INPUT}"
+            exit 0
+          fi
+
+          echo "Auto-detecting kernel version from ImageBuilder..."
+
+          # 方法 1: 从 repositories.conf 提取
+          KERNEL_VER=""
+          if [[ -f "${IB_DIR}/repositories.conf" ]]; then
+            echo "Found repositories.conf:"
+            cat "${IB_DIR}/repositories.conf"
+            # 仓库 URL 中通常包含内核版本，如 packages-6.12.94
+            KERNEL_VER=$(grep -oP 'kernel/[\d.]+\.\d+' "${IB_DIR}/repositories.conf" | \
+              head -1 | grep -oP '[\d]+\.[\d]+\.[\d]+' || true)
+          fi
+
+          # 方法 2: 从 .manifest 文件提取
+          if [[ -z "${KERNEL_VER}" ]]; then
+            MANIFEST=$(find "${IB_DIR}" -name "*.manifest" -o -name "manifest" 2>/dev/null | head -1)
+            if [[ -n "${MANIFEST}" ]] && [[ -f "${MANIFEST}" ]]; then
+              echo "Found manifest: ${MANIFEST}"
+              KERNEL_VER=$(grep -m1 '^kernel ' "${MANIFEST}" | grep -oP '[\d]+\.[\d]+\.[\d]+' || true)
+            fi
+          fi
+
+          # 方法 3: 从 target/linux 目录名提取
+          if [[ -z "${KERNEL_VER}" ]]; then
+            KERNEL_VER=$(find "${IB_DIR}/target/linux" -maxdepth 2 -name "Makefile" -exec grep -m1 'KERNEL_PATCHVER' {} \; 2>/dev/null | \
+              grep -oP '[\d]+\.[\d]+' | head -1 || true)
+            if [[ -n "${KERNEL_VER}" ]]; then
+              KERNEL_VER="${KERNEL_VER}.y"
+            fi
+          fi
+
+          # 方法 4: 从 buildinfo 文件提取
+          if [[ -z "${KERNEL_VER}" ]]; then
+            BUILDINFO=$(find "${IB_DIR}" -name "*.buildinfo" 2>/dev/null | head -1)
+            if [[ -n "${BUILDINFO}" ]]; then
+              KERNEL_VER=$(grep -oP 'Linux/\K[\d]+\.[\d]+\.[\d]+' "${BUILDINFO}" | head -1 || true)
+            fi
+          fi
+
+          if [[ -z "${KERNEL_VER}" ]]; then
+            echo "WARNING: Could not auto-detect kernel version, defaulting to 6.12.y"
+            KERNEL_VER="6.12.y"
+          fi
+
+          # 将具体版本号转换为 ophub 标签格式
+          # 例如: 6.12.94 → 6.12.y,  6.6.127 → 6.6.y,  6.18.41 → 6.18.y
+          if [[ "${KERNEL_VER}" =~ ^([0-9]+\.[0-9]+)\.[0-9]+$ ]]; then
+            KERNEL_TAG="${BASH_REMATCH[1]}.y"
+          elif [[ "${KERNEL_VER}" =~ ^[0-9]+\.[0-9]+\.y$ ]]; then
+            KERNEL_TAG="${KERNEL_VER}"
+          else
+            KERNEL_TAG="${KERNEL_VER}"
+          fi
+
+          echo "Detected kernel version: ${KERNEL_VER}"
+          echo "Mapped to ophub kernel tag: ${KERNEL_TAG}"
+          echo "kernel_version=${KERNEL_TAG}" >> ${GITHUB_OUTPUT}
+
+      # ============================================================
+      # Step 7: 准备自定义文件（网络配置等）
+      # ============================================================
+      - name: Prepare custom files
+        run: |
+          mkdir -p custom-files/etc/config
+          mkdir -p custom-files/etc
+
+          # 网络配置
+          cat > custom-files/etc/config/network << 'NETEOF'
+          config interface 'loopback'
+              option device 'lo'
+              option proto 'static'
+              option ipaddr '127.0.0.1'
+              option netmask '255.0.0.0'
+
+          config device
+              option name 'br-lan'
+              option type 'bridge'
+              list ports 'eth0'
+
+          config interface 'lan'
+              option device 'br-lan'
+              option proto 'static'
+              option ipaddr '${{ inputs.openwrt_ip }}'
+              option netmask '255.255.255.0'
+              option ip6assign '60'
+          NETEOF
+
+          # 系统配置
+          cat > custom-files/etc/config/system << 'SYSEOF'
+          config system
+              option hostname 'OpenWrt'
+              option timezone 'CST-8'
+              option zonename 'Asia/Shanghai'
+
+          config timeserver 'ntp'
+              option enabled '1'
+              option enable_server '0'
+              list server '0.openwrt.pool.ntp.org'
+              list server '1.openwrt.pool.ntp.org'
+              list server '2.openwrt.pool.ntp.org'
+              list server '3.openwrt.pool.ntp.org'
+          SYSEOF
+
+          # 防火墙配置
+          cat > custom-files/etc/config/firewall << 'FWEOF'
+          config defaults
+              option input 'ACCEPT'
+              option output 'ACCEPT'
+              option forward 'REJECT'
+              option synflood '1'
+              option flow_offloading '1'
+
+          config zone 'lan'
+              option name 'lan'
+              option input 'ACCEPT'
+              option output 'ACCEPT'
+              option forward 'ACCEPT'
+
+          config zone 'wan'
+              option name 'wan'
+              option input 'REJECT'
+              option output 'ACCEPT'
+              option forward 'REJECT'
+
+          config forwarding
+              option src 'lan'
+              option dest 'wan'
+          FWEOF
+
+          # firstboot 脚本
+          mkdir -p custom-files/etc/uci-defaults
+          cat > custom-files/etc/uci-defaults/99-custom << 'INITEOF'
+          #!/bin/sh
+          uci set system.@system[0].timezone='CST-8'
+          uci set system.@system[0].zonename='Asia/Shanghai'
+          uci commit system
+          exit 0
+          INITEOF
+          chmod +x custom-files/etc/uci-defaults/99-custom
+
+      # ============================================================
+      # Step 8: 使用 ImageBuilder 编译固件
+      # ============================================================
+      - name: Build image with ImageBuilder
+        run: |
+          cd "${IB_DIR}"
+
+          echo "=== Available profiles ==="
+          make info | head -30
+
+          # ----------------------------------------------------
+          # 构建 PACKAGES 列表（根据发行版调整）
+          # ----------------------------------------------------
+          PACKAGES="\
+            luci \
+            luci-i18n-base-zh-cn \
+            luci-theme-material \
+            luci-app-firewall \
+            luci-i18n-firewall-zh-cn \
+            luci-app-upnp \
+            luci-i18n-upnp-zh-cn \
+            luci-app-ttyd \
+            luci-i18n-ttyd-zh-cn \
+            luci-app-attendedsysupgrade \
+            luci-i18n-attendedsysupgrade-zh-cn \
+            wireless-regdb \
+            iptables-nft \
+            curl \
+            wget-ssl \
+            nano \
+            htop \
+            bash \
+            ca-bundle \
+          "
+
+          # 25.12 (apk) 有 package-manager
+          IB_VERSION="${{ steps.detect_version.outputs.ib_version }}"
+          if [[ "${IB_VERSION}" == 25.12.* ]]; then
+            PACKAGES="${PACKAGES} luci-app-package-manager luci-i18n-package-manager-zh-cn"
+          fi
+
+          # ImmortalWrt 自带 OpenClash 和 PassWall
+          if [[ "${{ steps.ib_config.outputs.has_openclash }}" == "yes" ]]; then
+            PACKAGES="${PACKAGES} luci-app-openclash luci-i18n-openclash-zh-cn"
+          fi
+          if [[ "${{ steps.ib_config.outputs.has_passwall }}" == "yes" ]]; then
+            PACKAGES="${PACKAGES} luci-app-passwall luci-i18n-passwall-zh-cn"
+          fi
+
+          echo ""
+          echo "=== PACKAGES list ==="
+          echo "${PACKAGES}"
+          echo ""
+
+          echo "=== Building image ==="
+          make image \
+            PROFILE="generic" \
+            PACKAGES="${PACKAGES}" \
+            FILES="../custom-files/" \
+            BIN_DIR="../output" \
+            ROOTFS_PARTSIZE="${{ inputs.rootfs_size }}"
+
+          echo ""
+          echo "=== Build output ==="
+          ls -lh ../output/
+
+      # ============================================================
+      # Step 9: 从 squashfs 镜像提取 rootfs.tar.gz
+      # ============================================================
+      - name: Extract rootfs.tar.gz
+        run: |
+          cd output
+
+          # 尝试方法 1: 直接查找 rootfs.tar.gz
+          ROOTFS_TAR=$(ls *rootfs.tar.gz 2>/dev/null | head -1)
+          if [ -n "$ROOTFS_TAR" ]; then
+            echo "Found rootfs.tar.gz directly: $ROOTFS_TAR"
+            cp "$ROOTFS_TAR" /tmp/rootfs.tar.gz
+          else
+            echo "No rootfs.tar.gz found, extracting from squashfs image..."
+
+            ROOTFS_IMG=$(ls *squashfs-rootfs.img.gz 2>/dev/null | head -1)
+            if [ -z "$ROOTFS_IMG" ]; then
+              ROOTFS_IMG=$(ls *squashfs-rootfs.img 2>/dev/null | head -1)
+            fi
+
+            if [ -n "$ROOTFS_IMG" ]; then
+              echo "Found squashfs rootfs image: $ROOTFS_IMG"
+              if [[ "$ROOTFS_IMG" == *.gz ]]; then
+                gunzip "$ROOTFS_IMG"
+                ROOTFS_IMG="${ROOTFS_IMG%.gz}"
+              fi
+              sudo unsquashfs -d /tmp/rootfs -f "$ROOTFS_IMG"
+              cd /tmp
+              tar czf rootfs.tar.gz -C rootfs .
+              cd -
+            else
+              ROOTFS_EXT4=$(ls *ext4-rootfs.img.gz 2>/dev/null | head -1)
+              if [ -n "$ROOTFS_EXT4" ]; then
+                echo "Found ext4 rootfs image: $ROOTFS_EXT4"
+                if [[ "$ROOTFS_EXT4" == *.gz ]]; then
+                  gunzip "$ROOTFS_EXT4"
+                  ROOTFS_EXT4="${ROOTFS_EXT4%.gz}"
+                fi
+                mkdir -p /tmp/rootfs
+                sudo mount -o loop "$ROOTFS_EXT4" /tmp/rootfs
+                tar czf /tmp/rootfs.tar.gz -C /tmp/rootfs .
+                sudo umount /tmp/rootfs
+              else
+                echo "ERROR: Cannot find any rootfs image!"
+                ls -la
+                exit 1
+              fi
+            fi
+          fi
+
+          echo ""
+          echo "=== rootfs.tar.gz info ==="
+          ls -lh /tmp/rootfs.tar.gz
+
+      # ============================================================
+      # Step 10: 放置 rootfs 并运行 ophub remake
+      # ============================================================
+      - name: Run ophub remake
+        run: |
+          KERNEL_VER="${{ steps.detect_kernel.outputs.kernel_version }}"
+
+          mkdir -p openwrt-armsr
+          cp /tmp/rootfs.tar.gz openwrt-armsr/openwrt-armsr-armv8-generic-rootfs.tar.gz
+
+          echo "=== Remake configuration ==="
+          echo "Source:      ${{ inputs.source }} ${{ steps.detect_version.outputs.ib_version }}"
+          echo "Board:       rockdd"
+          echo "Kernel:      ${KERNEL_VER}"
+          echo "Pkg manager: ${{ steps.ib_config.outputs.pkg_manager }}"
+          echo ""
+
+          sudo ./remake -b rockdd -k "${KERNEL_VER}"
+
+          echo ""
+          echo "=== Remake output ==="
+          ls -lh openwrt/
+
+      # ============================================================
+      # Step 11: 上传到 GitHub Release
+      # ============================================================
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: openwrt-rockdd-ib-${{ inputs.source }}-${{ github.run_number }}
+          name: ${{ inputs.source }} ${{ steps.detect_version.outputs.ib_version }} ImageBuilder for rockdd
+          body: |
+            ## ${{ inputs.source }} ${{ steps.detect_version.outputs.ib_version }} ImageBuilder for RK3399-rockdd
+
+            ### 构建信息
+            - 发行版: ${{ inputs.source }}
+            - ImageBuilder 版本: ${{ steps.detect_version.outputs.ib_version }}
+            - 内核版本: ${{ steps.detect_kernel.outputs.kernel_version }}
+            - 包管理器: ${{ steps.ib_config.outputs.pkg_manager }}
+            - rootfs 大小: ${{ inputs.rootfs_size }} MB
+            - 路由器 IP: ${{ inputs.openwrt_ip }}
+
+            ### 包含功能
+            - OpenClash: ${{ steps.ib_config.outputs.has_openclash }}
+            - PassWall: ${{ steps.ib_config.outputs.has_passwall }}
+            - RTL8822BE WiFi 驱动 (由 ophub 内核提供)
+            - RTL8211 千兆网卡 PHY 驱动
+            - 中文界面
+
+            ### 刷机方法
+            - 解压 .img.gz 文件
+            - 使用 dd 或 balenaEtcher 写入 SD 卡/eMMC
+          files: |
+            openwrt/*.img.gz
+            openwrt/*.img
+          draft: false
+          prerelease: false
