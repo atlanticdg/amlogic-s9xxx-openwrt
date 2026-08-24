@@ -99,6 +99,7 @@ jobs:
 
           if [[ "${IB_VERSION_INPUT}" != "latest" ]]; then
             echo "ib_version=${IB_VERSION_INPUT}" >> ${GITHUB_OUTPUT}
+            echo "build_date=$(date '+%Y-%m-%d %H:%M')" >> ${GITHUB_OUTPUT}
             echo "Using user-specified version: ${IB_VERSION_INPUT}"
             exit 0
           fi
@@ -137,6 +138,7 @@ jobs:
 
           echo "Detected latest stable version: ${LATEST_VERSION}"
           echo "ib_version=${LATEST_VERSION}" >> ${GITHUB_OUTPUT}
+          echo "build_date=$(date '+%Y-%m-%d %H:%M')" >> ${GITHUB_OUTPUT}
 
       # ============================================================
       # Step 4: 确定 ImageBuilder URL 和配置参数
@@ -402,9 +404,19 @@ jobs:
           uci set system.@system[0].timezone='CST-8'
           uci set system.@system[0].zonename='Asia/Shanghai'
           uci commit system
+          
+          # 禁用 ophub 硬编码的 SDIO 版本 rtw88_8822cs
+          rm -f /etc/modules.d/rtw88_8822cs
+          
           exit 0
           INITEOF
           chmod +x "${CF}/etc/uci-defaults/99-custom"
+
+          # RTL8822BE PCIe WiFi 模块自动加载
+          # ophub remake 会删除 ImageBuilder 的 kmod 包并替换为自定义内核模块，
+          # 同时硬编码了 rtw88_8822cs (SDIO)，这里补上 rtw88_8822be (PCIe)
+          mkdir -p "${CF}/etc/modules.d"
+          echo "rtw88_8822be" > "${CF}/etc/modules.d/rtw88-8822be"
 
           echo "=== Custom files tree ==="
           find "${CF}" -type f
@@ -442,6 +454,11 @@ jobs:
             htop \
             bash \
             ca-bundle \
+            pciutils \
+            usbutils \
+            iw \
+            kmod-rtw88-8822be \
+            rtl8822be-firmware \
           "
 
           # 25.12 (apk) 有 package-manager
@@ -570,12 +587,14 @@ jobs:
       - name: Run ophub remake
         run: |
           KERNEL_VER="${{ steps.detect_kernel.outputs.kernel_version }}"
+          IB_VERSION="${{ steps.detect_version.outputs.ib_version }}"
+          SOURCE="${{ inputs.source }}"
 
           mkdir -p openwrt-armsr
           cp /tmp/rootfs.tar.gz openwrt-armsr/openwrt-armsr-armv8-generic-rootfs.tar.gz
 
           echo "=== Remake configuration ==="
-          echo "Source:      ${{ inputs.source }} ${{ steps.detect_version.outputs.ib_version }}"
+          echo "Source:      ${SOURCE} ${IB_VERSION}"
           echo "Board:       rockdd"
           echo "Kernel:      ${KERNEL_VER}"
           echo "Pkg manager: ${{ steps.ib_config.outputs.pkg_manager }}"
@@ -588,16 +607,45 @@ jobs:
           echo "=== Remake output (openwrt/out/) ==="
           ls -lh openwrt/out/
 
+          # ============================================================
+          # 重命名输出文件：加入发行版版本和内核版本
+          # 原始文件名: openwrt_immortalwrt_rockchip_rockdd_k6.18.y_2026.08.24.img.gz
+          # 目标文件名: rockdd_immortalwrt-25.12.1_k6.18.44_2026.08.24.img.gz
+          # ============================================================
+          echo ""
+          echo "=== Renaming output files ==="
+
+          cd openwrt/out/
+
+          # 获取日期部分（从原始文件名提取）
+          BUILD_DATE=$(date +%Y.%m.%d)
+
+          for f in *.img.gz; do
+            [ -f "$f" ] || continue
+            NEW_NAME="rockdd_${SOURCE}-${IB_VERSION}_k${KERNEL_VER}_${BUILD_DATE}.img.gz"
+            echo "  ${f} -> ${NEW_NAME}"
+            mv "$f" "${NEW_NAME}"
+            # 同时重命名对应的 .img 文件（如果存在）
+            BASE="${f%.img.gz}"
+            if [ -f "${BASE}.img" ]; then
+              mv "${BASE}.img" "rockdd_${SOURCE}-${IB_VERSION}_k${KERNEL_VER}_${BUILD_DATE}.img"
+            fi
+          done
+
+          echo ""
+          echo "=== Final output files ==="
+          ls -lh
+
       # ============================================================
-      # Step 11: 上传到 GitHub Release
+      # Step 11: 上传到固定 Release
       # ============================================================
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: openwrt-rockdd-ib-${{ inputs.source }}-${{ github.run_number }}
-          name: ${{ inputs.source }} ${{ steps.detect_version.outputs.ib_version }} ImageBuilder for rockdd
+          tag_name: ImageBuilder-for-openwrt
+          name: ImageBuilder for openwrt
           body: |
-            ## ${{ inputs.source }} ${{ steps.detect_version.outputs.ib_version }} ImageBuilder for RK3399-rockdd
+            ## ImageBuilder for openwrt - ${{ inputs.source }} ${{ steps.detect_version.outputs.ib_version }}
 
             ### 构建信息
             - 发行版: ${{ inputs.source }}
@@ -606,6 +654,7 @@ jobs:
             - 包管理器: ${{ steps.ib_config.outputs.pkg_manager }}
             - rootfs 大小: ${{ inputs.rootfs_size }} MB
             - 路由器 IP: ${{ inputs.openwrt_ip }}
+            - 构建时间: ${{ steps.detect_version.outputs.build_date }}
 
             ### 包含功能
             - OpenClash: ${{ steps.ib_config.outputs.has_openclash }}  (选择: ${{ inputs.openclash }})
@@ -614,11 +663,11 @@ jobs:
             - RTL8211 千兆网卡 PHY 驱动
             - 中文界面
 
-            ### 刷机方法
-            - 解压 .img.gz 文件
-            - 使用 dd 或 balenaEtcher 写入 SD 卡/eMMC
+            ### 文件说明
+            文件名格式: `rockdd_{发行版}-{版本}_k{内核版本}_{日期}.img.gz`
+            解压后使用 dd 或 balenaEtcher 写入 SD 卡/eMMC
           files: |
-            openwrt/out/*.img.gz
-            openwrt/out/*.img
+            openwrt/out/rockdd_*.img.gz
+            openwrt/out/rockdd_*.img
           draft: false
           prerelease: false
