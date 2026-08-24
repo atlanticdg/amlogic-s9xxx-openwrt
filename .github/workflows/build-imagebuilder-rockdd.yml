@@ -457,6 +457,8 @@ jobs:
             pciutils \
             usbutils \
             iw \
+            wpad-mesh-openssl \
+            wpa-cli \
             kmod-rtw88-8822be \
             rtl8822be-firmware \
           "
@@ -501,6 +503,12 @@ jobs:
             kmod-phy-marvell-10g \
             kmod-phy-smsc \
             kmod-renesas-net-avb \
+            wpad-basic \
+            wpad-basic-openssl \
+            wpad-basic-mbedtls \
+            wpad-basic-wolfssl \
+            hostapd-mini \
+            wpad-mini \
           "
 
           echo ""
