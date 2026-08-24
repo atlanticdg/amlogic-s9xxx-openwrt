@@ -581,11 +581,12 @@ jobs:
           echo "Pkg manager: ${{ steps.ib_config.outputs.pkg_manager }}"
           echo ""
 
-          sudo ./remake -b rockdd -k "${KERNEL_VER}"
+          # 使用 atlanticdg/kernel 仓库（包含 rockdd 自定义 DTS）
+          sudo ./remake -b rockdd -k "${KERNEL_VER}" -r "atlanticdg/kernel"
 
           echo ""
-          echo "=== Remake output ==="
-          ls -lh openwrt/
+          echo "=== Remake output (openwrt/out/) ==="
+          ls -lh openwrt/out/
 
       # ============================================================
       # Step 11: 上传到 GitHub Release
@@ -617,7 +618,7 @@ jobs:
             - 解压 .img.gz 文件
             - 使用 dd 或 balenaEtcher 写入 SD 卡/eMMC
           files: |
-            openwrt/*.img.gz
-            openwrt/*.img
+            openwrt/out/*.img.gz
+            openwrt/out/*.img
           draft: false
           prerelease: false
