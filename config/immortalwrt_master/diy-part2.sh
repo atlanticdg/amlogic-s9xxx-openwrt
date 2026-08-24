@@ -58,7 +58,6 @@ git clone -b main https://github.com/ophub/luci-app-amlogic.git package/luci-app
 echo "Enabling OpenClash and PassWall..."
 echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
 echo "CONFIG_PACKAGE_luci-app-passwall=y" >> .config
-echo "CONFIG_PACKAGE_luci-i18n-openclash-zh-cn=y" >> .config
 echo "CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y" >> .config
 
 # ===== 启用 RTL8822BE WiFi 驱动 =====
