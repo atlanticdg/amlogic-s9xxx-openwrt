@@ -407,6 +407,9 @@ jobs:
           
           # 禁用 ophub 硬编码的 SDIO 版本 rtw88_8822cs
           rm -f /etc/modules.d/rtw88_8822cs
+
+          # 设置 root 默认密码为 password
+          sed -i 's/^root::/root:\$1\$V4UetPzk\$CYXluq4wUazHjmCDBCqXF.:/' /etc/shadow
           
           exit 0
           INITEOF
