@@ -609,7 +609,7 @@ jobs:
 
           # ============================================================
           # 重命名输出文件：加入发行版版本和内核版本
-          # 原始文件名: openwrt_immortalwrt_rockchip_rockdd_k6.18.y_2026.08.24.img.gz
+          # 原始文件名: openwrt_rockchip_rockdd_k6.18.44_2026.08.24.img.gz
           # 目标文件名: rockdd_immortalwrt-25.12.1_k6.18.44_2026.08.24.img.gz
           # ============================================================
           echo ""
@@ -617,20 +617,33 @@ jobs:
 
           cd openwrt/out/
 
-          # 获取日期部分（从原始文件名提取）
-          BUILD_DATE=$(date +%Y.%m.%d)
-
           for f in *.img.gz; do
             [ -f "$f" ] || continue
-            NEW_NAME="rockdd_${SOURCE}-${IB_VERSION}_k${KERNEL_VER}_${BUILD_DATE}.img.gz"
+
+            # 从原始文件名提取实际内核版本 (k6.18.44 -> 6.18.44)
+            REAL_KVER=$(echo "$f" | grep -oP 'k\K[0-9]+\.[0-9]+\.[0-9]+')
+            if [ -z "$REAL_KVER" ]; then
+              REAL_KVER="${KERNEL_VER}"
+            fi
+
+            # 从原始文件名提取日期
+            FILE_DATE=$(echo "$f" | grep -oP '\d{4}\.\d{2}\.\d{2}')
+            if [ -z "$FILE_DATE" ]; then
+              FILE_DATE=$(date +%Y.%m.%d)
+            fi
+
+            NEW_NAME="rockdd_${SOURCE}-${IB_VERSION}_k${REAL_KVER}_${FILE_DATE}.img.gz"
             echo "  ${f} -> ${NEW_NAME}"
-            mv "$f" "${NEW_NAME}"
+            sudo mv "$f" "${NEW_NAME}"
             # 同时重命名对应的 .img 文件（如果存在）
             BASE="${f%.img.gz}"
             if [ -f "${BASE}.img" ]; then
-              mv "${BASE}.img" "rockdd_${SOURCE}-${IB_VERSION}_k${KERNEL_VER}_${BUILD_DATE}.img"
+              sudo mv "${BASE}.img" "rockdd_${SOURCE}-${IB_VERSION}_k${REAL_KVER}_${FILE_DATE}.img"
             fi
           done
+
+          # 修复文件权限，确保上传步骤可以读取
+          sudo chown -R runner:docker . 2>/dev/null || sudo chmod 644 *.img* 2>/dev/null || true
 
           echo ""
           echo "=== Final output files ==="
