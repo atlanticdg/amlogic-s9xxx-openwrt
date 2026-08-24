@@ -43,6 +43,24 @@ on:
         required: false
         default: "1024"
         type: string
+      openclash:
+        description: "是否安装 OpenClash（auto = 根据发行版自动判断）"
+        required: false
+        default: "auto"
+        type: choice
+        options:
+          - "auto"
+          - "yes"
+          - "no"
+      passwall:
+        description: "是否安装 PassWall（auto = 根据发行版自动判断）"
+        required: false
+        default: "auto"
+        type: choice
+        options:
+          - "auto"
+          - "yes"
+          - "no"
       openwrt_ip:
         description: "路由器 LAN IP"
         required: false
@@ -187,13 +205,26 @@ jobs:
           echo "ib_url=${IB_URL}" >> ${GITHUB_OUTPUT}
           echo "ib_prefix=${IB_PREFIX}" >> ${GITHUB_OUTPUT}
           echo "pkg_manager=${PKG_MANAGER}" >> ${GITHUB_OUTPUT}
+
+          # 用户可手动覆盖 OpenClash / PassWall 的安装选择
+          # "auto" 时沿用上面的发行版默认值
+          OPENCLASH_INPUT="${{ inputs.openclash }}"
+          PASSWALL_INPUT="${{ inputs.passwall }}"
+
+          if [[ "${OPENCLASH_INPUT}" != "auto" ]]; then
+            HAS_OPENCLASH="${OPENCLASH_INPUT}"
+          fi
+          if [[ "${PASSWALL_INPUT}" != "auto" ]]; then
+            HAS_PASSWALL="${PASSWALL_INPUT}"
+          fi
+
           echo "has_openclash=${HAS_OPENCLASH}" >> ${GITHUB_OUTPUT}
           echo "has_passwall=${HAS_PASSWALL}" >> ${GITHUB_OUTPUT}
 
           echo "URL:          ${IB_URL}"
           echo "Pkg manager:  ${PKG_MANAGER}"
-          echo "OpenClash:    ${HAS_OPENCLASH}"
-          echo "PassWall:     ${HAS_PASSWALL}"
+          echo "OpenClash:    ${HAS_OPENCLASH}  (input: ${OPENCLASH_INPUT})"
+          echo "PassWall:     ${HAS_PASSWALL}  (input: ${PASSWALL_INPUT})"
 
       # ============================================================
       # Step 5: 下载 ImageBuilder
@@ -205,8 +236,21 @@ jobs:
           wget -q "${IB_URL}" -O ib.tar.zst
           tar --zstd -xf ib.tar.zst
           IB_DIR=$(find . -maxdepth 1 -type d -name "*-imagebuilder-*" | head -1)
+          IB_DIR="$(cd "${IB_DIR}" && pwd)"
           echo "IB_DIR=${IB_DIR}" >> ${GITHUB_ENV}
           echo "ImageBuilder directory: ${IB_DIR}"
+
+          # 预创建输出目录和自定义文件目录（使用绝对路径）
+          OUTPUT_DIR="${GITHUB_WORKSPACE}/output"
+          mkdir -p "${OUTPUT_DIR}"
+          echo "OUTPUT_DIR=${OUTPUT_DIR}" >> ${GITHUB_ENV}
+
+          CUSTOM_FILES="${GITHUB_WORKSPACE}/custom-files"
+          mkdir -p "${CUSTOM_FILES}"
+          echo "CUSTOM_FILES=${CUSTOM_FILES}" >> ${GITHUB_ENV}
+
+          echo "Output directory:     ${OUTPUT_DIR}"
+          echo "Custom files directory: ${CUSTOM_FILES}"
 
       # ============================================================
       # Step 6: 自动检测内核版本（如果选择了 auto）
@@ -284,11 +328,12 @@ jobs:
       # ============================================================
       - name: Prepare custom files
         run: |
-          mkdir -p custom-files/etc/config
-          mkdir -p custom-files/etc
+          CF="${CUSTOM_FILES}"
+          mkdir -p "${CF}/etc/config"
+          mkdir -p "${CF}/etc"
 
           # 网络配置
-          cat > custom-files/etc/config/network << 'NETEOF'
+          cat > "${CF}/etc/config/network" << 'NETEOF'
           config interface 'loopback'
               option device 'lo'
               option proto 'static'
@@ -309,7 +354,7 @@ jobs:
           NETEOF
 
           # 系统配置
-          cat > custom-files/etc/config/system << 'SYSEOF'
+          cat > "${CF}/etc/config/system" << 'SYSEOF'
           config system
               option hostname 'OpenWrt'
               option timezone 'CST-8'
@@ -325,7 +370,7 @@ jobs:
           SYSEOF
 
           # 防火墙配置
-          cat > custom-files/etc/config/firewall << 'FWEOF'
+          cat > "${CF}/etc/config/firewall" << 'FWEOF'
           config defaults
               option input 'ACCEPT'
               option output 'ACCEPT'
@@ -351,15 +396,18 @@ jobs:
           FWEOF
 
           # firstboot 脚本
-          mkdir -p custom-files/etc/uci-defaults
-          cat > custom-files/etc/uci-defaults/99-custom << 'INITEOF'
+          mkdir -p "${CF}/etc/uci-defaults"
+          cat > "${CF}/etc/uci-defaults/99-custom" << 'INITEOF'
           #!/bin/sh
           uci set system.@system[0].timezone='CST-8'
           uci set system.@system[0].zonename='Asia/Shanghai'
           uci commit system
           exit 0
           INITEOF
-          chmod +x custom-files/etc/uci-defaults/99-custom
+          chmod +x "${CF}/etc/uci-defaults/99-custom"
+
+          echo "=== Custom files tree ==="
+          find "${CF}" -type f
 
       # ============================================================
       # Step 8: 使用 ImageBuilder 编译固件
@@ -446,28 +494,28 @@ jobs:
           echo "${DISABLED_PKGS}"
           echo ""
 
-          echo "=== Creating output directory ==="
-          mkdir -p ../output
+          echo "=== Output directory: ${OUTPUT_DIR} ==="
+          echo "=== Custom files:     ${CUSTOM_FILES} ==="
 
           echo "=== Building image ==="
           make image \
             PROFILE="generic" \
             PACKAGES="${PACKAGES}" \
             DISABLED_PACKAGES="${DISABLED_PKGS}" \
-            FILES="../custom-files/" \
-            BIN_DIR="../output" \
+            FILES="${CUSTOM_FILES}/" \
+            BIN_DIR="${OUTPUT_DIR}" \
             ROOTFS_PARTSIZE="${{ inputs.rootfs_size }}"
 
           echo ""
           echo "=== Build output ==="
-          ls -lh ../output/
+          ls -lh "${OUTPUT_DIR}/"
 
       # ============================================================
       # Step 9: 从 squashfs 镜像提取 rootfs.tar.gz
       # ============================================================
       - name: Extract rootfs.tar.gz
         run: |
-          cd output
+          cd "${OUTPUT_DIR}"
 
           # 尝试方法 1: 直接查找 rootfs.tar.gz
           ROOTFS_TAR=$(ls *rootfs.tar.gz 2>/dev/null | head -1)
@@ -491,7 +539,7 @@ jobs:
               sudo unsquashfs -d /tmp/rootfs -f "$ROOTFS_IMG"
               cd /tmp
               tar czf rootfs.tar.gz -C rootfs .
-              cd -
+              cd "${OUTPUT_DIR}"
             else
               ROOTFS_EXT4=$(ls *ext4-rootfs.img.gz 2>/dev/null | head -1)
               if [ -n "$ROOTFS_EXT4" ]; then
@@ -559,8 +607,8 @@ jobs:
             - 路由器 IP: ${{ inputs.openwrt_ip }}
 
             ### 包含功能
-            - OpenClash: ${{ steps.ib_config.outputs.has_openclash }}
-            - PassWall: ${{ steps.ib_config.outputs.has_passwall }}
+            - OpenClash: ${{ steps.ib_config.outputs.has_openclash }}  (选择: ${{ inputs.openclash }})
+            - PassWall: ${{ steps.ib_config.outputs.has_passwall }}  (选择: ${{ inputs.passwall }})
             - RTL8822BE WiFi 驱动 (由 ophub 内核提供)
             - RTL8211 千兆网卡 PHY 驱动
             - 中文界面
