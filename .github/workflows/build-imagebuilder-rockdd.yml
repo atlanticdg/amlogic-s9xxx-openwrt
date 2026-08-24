@@ -446,6 +446,9 @@ jobs:
           echo "${DISABLED_PKGS}"
           echo ""
 
+          echo "=== Creating output directory ==="
+          mkdir -p ../output
+
           echo "=== Building image ==="
           make image \
             PROFILE="generic" \
