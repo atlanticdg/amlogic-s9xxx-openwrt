@@ -43,61 +43,13 @@ fi
 #
 # ------------------------------- Main source configuration ends -------------------------------
 
-# ------------------------------- Other started -------------------------------
+# ------------------------------- Additional customizations -------------------------------
 #
 # Add luci-app-amlogic
 rm -rf package/luci-app-amlogic
 git clone -b main https://github.com/ophub/luci-app-amlogic.git package/luci-app-amlogic
 #
-# Apply patch
+# Apply patches
 # git apply ../config/patches/{0001*,0002*}.patch --directory=feeds/luci
 #
-# ------------------------------- Other ends -------------------------------
-
-# ===== 启用 OpenClash 和 PassWall（ImmortalWrt 25.12 官方源自带） =====
-echo "Enabling OpenClash and PassWall..."
-echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
-echo "CONFIG_PACKAGE_luci-app-passwall=y" >> .config
-echo "CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y" >> .config
-
-# ===== 启用 RTL8822BE WiFi 驱动 =====
-echo "Enabling RTL8822BE driver..."
-echo "CONFIG_PACKAGE_kmod-rtw88-8822be=y" >> .config
-
-# ===== 安全防护：禁用 Rust（如官方源不触发则无影响） =====
-# 仅当 Rust 包存在时才 stub，避免不必要修改
-if [ -d "feeds/packages/lang/rust" ]; then
-    echo "Stubbing Rust Makefile to prevent CI artifact download failure..."
-    cat > feeds/packages/lang/rust/Makefile << 'RUSTSTUB'
-include $(TOPDIR)/rules.mk
-PKG_NAME:=rust
-PKG_VERSION:=0.0.0
-PKG_RELEASE:=1
-PKG_BUILD_DEPENDS:=
-include $(INCLUDE_DIR)/package.mk
-RUSTSTUB
-
-    # 同步处理依赖 rust 的包
-    for pkg in maturin uv; do
-        found=$(find feeds/packages -name "$pkg" -type d 2>/dev/null | head -1)
-        if [ -n "$found" ]; then
-            cat > "$found/Makefile" << 'DEPSTUB'
-include $(TOPDIR)/rules.mk
-PKG_NAME:=stub
-PKG_VERSION:=0.0.0
-PKG_RELEASE:=1
-PKG_BUILD_DEPENDS:=
-include $(INCLUDE_DIR)/package.mk
-DEPSTUB
-        fi
-    done
-
-    sed -i '/CONFIG_PACKAGE_rust/d' .config
-    sed -i '/CONFIG_PACKAGE_rustc/d' .config
-    sed -i '/CONFIG_PACKAGE_cargo/d' .config
-    sed -i '/CONFIG_PACKAGE_maturin/d' .config
-    sed -i '/CONFIG_PACKAGE_uv/d' .config
-    echo '# CONFIG_PACKAGE_rust is not set' >> .config
-    echo '# CONFIG_PACKAGE_rustc is not set' >> .config
-    echo '# CONFIG_PACKAGE_cargo is not set' >> .config
-fi
+# ------------------------------- Additional customizations ends -------------------------------
