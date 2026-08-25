@@ -4,7 +4,7 @@
 # 自定义修改：OpenClash/RTL8822BE 移入 yml，diy-part2.sh 保持 ophub 原版
 #============================================================================================
 
-name: Build OpenWrt system image
+name: 2 Build OpenWrt system image
 
 on:
   repository_dispatch:
