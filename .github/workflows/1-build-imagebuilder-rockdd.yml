@@ -78,7 +78,7 @@ jobs:
       # Step 1: Checkout
       # ============================================================
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # ============================================================
       # Step 2: 安装依赖
@@ -664,7 +664,7 @@ jobs:
       # Step 11: 上传到固定 Release
       # ============================================================
       - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ImageBuilder-for-openwrt
           name: ImageBuilder for openwrt
