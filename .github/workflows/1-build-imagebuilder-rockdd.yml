@@ -5,7 +5,7 @@
 # 放置到 atlanticdg/amlogic-s9xxx-openwrt/.github/workflows/
 #==========================================================================
 
-name: Build OpenWrt using ImageBuilder for rockdd
+name: 1 Build OpenWrt using ImageBuilder for rockdd
 
 on:
   workflow_dispatch:
