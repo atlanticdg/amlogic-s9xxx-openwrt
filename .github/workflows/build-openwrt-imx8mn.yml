@@ -1,0 +1,536 @@
+#============================================================================================
+# Build OpenWrt for i.MX8MN EVK from source
+# OpenWrt 内置 imx/cortexa53 target，imx8m profile 自带 imx8mn-evk.dts
+# 需要补丁 cortexa53.mk 为 imx8m 添加 SD 卡镜像生成
+#============================================================================================
+
+name: Build OpenWrt for i.MX8MN
+
+on:
+  workflow_dispatch:
+    inputs:
+      openwrt_version:
+        description: "OpenWrt 版本"
+        required: true
+        default: "v25.12.5"
+        type: choice
+        options:
+          - "v25.12.5"
+          - "v25.12.0"
+          - "main"
+      openwrt_ip:
+        description: "路由器 LAN IP"
+        required: false
+        default: "192.168.1.1"
+        type: string
+      root_password:
+        description: "root 密码 (默认 password)"
+        required: false
+        default: "password"
+        type: string
+      include_openclash:
+        description: "安装 OpenClash"
+        required: false
+        default: false
+        type: boolean
+      use_ccache:
+        description: "使用 ccache 加速"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  TZ: Etc/UTC
+  CCACHE_DIR: /builder/openwrt/.ccache
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Initialize build environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          docker rmi -f $(docker images -q) 2>/dev/null || true
+          [[ -n "${AGENT_TOOLSDIRECTORY}" ]] && sudo rm -rf "${AGENT_TOOLSDIRECTORY}"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android 2>/dev/null
+          sudo swapoff -a
+          sudo rm -f /swapfile /mnt/swapfile
+          sudo apt-get -y update
+          sudo apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+          sudo apt-get -y install $(curl -fsSL https://ophub.org/ubuntu2404-make-openwrt-depends)
+          sudo systemctl daemon-reload
+          sudo apt-get -y autoremove --purge
+          sudo apt-get clean
+          sudo sed -i '/NVM_DIR/d;/skel/d' /root/{.bashrc,.profile}
+          sudo rm -rf ~/{.cargo,.dotnet,.rustup}
+          sudo timedatectl set-timezone "${TZ:-Etc/UTC}"
+          sudo ntpdate ntp.ubuntu.com 0.pool.ntp.org || true
+          sudo timedatectl set-ntp true
+          date -u
+
+      - name: Create virtual disk
+        run: |
+          root_avail=$(df --block-size=1G / | tail -1 | awk '{print $4}')
+          root_size=$(( root_avail - 4 ))
+          [[ "${root_size}" -gt 0 ]] || { echo "Error: Insufficient space"; exit 1; }
+          sudo truncate -s "${root_size}"G /root.img
+          build_dev=$(sudo losetup --find --show /root.img)
+          sudo mkfs.xfs -f -i sparse=0 -b size=4096 "${build_dev}"
+          sudo mkdir -p /builder
+          sudo mount "${build_dev}" /builder
+          sudo chown -R runner:runner /builder
+          df -Th
+
+      - name: Clone OpenWrt source
+        working-directory: /builder
+        run: |
+          OW_VERSION="${{ inputs.openwrt_version }}"
+          if [[ "${OW_VERSION}" == "main" ]]; then
+            git clone --depth=1 https://github.com/openwrt/openwrt.git openwrt
+          else
+            git clone --depth=1 --branch="${OW_VERSION}" https://github.com/openwrt/openwrt.git openwrt
+          fi
+          ln -sf /builder/openwrt ${{ github.workspace }}/openwrt
+          echo "build_tag=OpenWrt_imx8mn_${OW_VERSION}_$(date +%Y.%m.%d)" >> ${GITHUB_ENV}
+          echo "OW_VERSION=${OW_VERSION}" >> ${GITHUB_ENV}
+          df -hT
+
+      - name: Update and install feeds
+        run: |
+          cd openwrt/
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      # ============================================
+      # 关键步骤：为 imx8m profile 添加 SD 卡镜像生成
+      # OpenWrt 的 imx8m profile 只编译内核和 DTS，不生成 SD 卡镜像
+      # 需要补丁 cortexa53.mk 添加 IMAGES 和 IMAGE 定义
+      # ============================================
+      - name: Patch imx8m device for SD card image
+        run: |
+          cd openwrt/
+          MK_FILE="target/linux/imx/image/cortexa53.mk"
+
+          echo "=== Before patch ==="
+          sed -n '/define Device\/imx8m/,/^endef/p' "${MK_FILE}"
+
+          # 在 Make 中，同一个 Device 定义两次，最后一次生效
+          # 所以直接在文件末尾追加新的 imx8m 定义即可覆盖原定义
+          cat >> "${MK_FILE}" << 'PATCHEOF'
+
+          # ===== Patched: imx8m with SD card image generation =====
+          define Device/imx8m
+            $(call Device/Default)
+            DEVICE_VENDOR := NXP
+            DEVICE_MODEL := i.MX8M
+            DEVICE_DTS := $(basename $(notdir $(wildcard $(DTS_DIR)/freescale/imx8m*.dts)))
+            DEVICE_PACKAGES := \
+              kmod-usb-dwc3 \
+              kmod-usb-dwc3-imx \
+              kmod-thermal-imx8m \
+              kmod-ethernet \
+              kmod-phy-realtek
+            FILESYSTEMS := squashfs ext4
+            PARTITION_OFFSET := 16M
+            IMAGES := img.gz
+            IMAGE/img.gz := boot-img-ext4 | sdcard-img-ext4 | gzip | append-metadata
+          endef
+          TARGET_DEVICES += imx8m
+          PATCHEOF
+
+          echo ""
+          echo "=== After patch (last imx8m definition) ==="
+          grep -A 15 "Patched: imx8m" "${MK_FILE}"
+
+      - name: Configure build
+        run: |
+          cd openwrt/
+
+          # 基础 target 配置
+          cat > .config << 'EOF'
+          CONFIG_TARGET_imx=y
+          CONFIG_TARGET_imx_cortexa53=y
+          CONFIG_TARGET_MULTI_PROFILE=y
+          CONFIG_TARGET_DEVICE_imx_cortexa53_DEVICE_imx8m=y
+          CONFIG_TARGET_ROOTFS_PARTSIZE=1024
+          CONFIG_TARGET_KERNEL_PARTSIZE=32
+          EOF
+
+          # LuCI 和基础包
+          cat >> .config << 'EOF'
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+          CONFIG_PACKAGE_luci-theme-material=y
+          CONFIG_PACKAGE_luci-app-firewall=y
+          CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
+          CONFIG_PACKAGE_luci-app-upnp=y
+          CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y
+          CONFIG_PACKAGE_luci-app-ttyd=y
+          CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
+          CONFIG_PACKAGE_luci-app-attendedsysupgrade=y
+          CONFIG_PACKAGE_luci-i18n-attendedsysupgrade-zh-cn=y
+          CONFIG_PACKAGE_wpad-mesh-openssl=y
+          CONFIG_PACKAGE_wpa-cli=y
+          CONFIG_PACKAGE_wireless-regdb=y
+          CONFIG_PACKAGE_iw=y
+          CONFIG_PACKAGE_pciutils=y
+          CONFIG_PACKAGE_usbutils=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_wget-ssl=y
+          CONFIG_PACKAGE_nano=y
+          CONFIG_PACKAGE_htop=y
+          CONFIG_PACKAGE_bash=y
+          CONFIG_PACKAGE_ca-bundle=y
+          CONFIG_PACKAGE_iptables-nft=y
+          EOF
+
+          # OpenClash（可选）
+          if [[ "${{ inputs.include_openclash }}" == "true" ]]; then
+            echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
+          fi
+
+          # ccache
+          if [[ "${{ inputs.use_ccache }}" == "true" ]]; then
+            echo "CONFIG_DEVEL=y" >> .config
+            echo "CONFIG_CCACHE=y" >> .config
+            echo 'CONFIG_CCACHE_DIR="$(TOPDIR)/.ccache"' >> .config
+          fi
+
+          make defconfig
+
+      - name: Apply custom settings
+        run: |
+          cd openwrt/
+
+          # 设置 root 密码
+          PASSWORD="${{ inputs.root_password }}"
+          if [[ -n "${PASSWORD}" && "${PASSWORD}" != "password" ]]; then
+            HASH=$(openssl passwd -1 "${PASSWORD}")
+            sed -i "s|^root::|root:${HASH}:|" package/base-files/files/etc/shadow
+          else
+            sed -i 's|^root::|root:$1$V4UetPzk$CYXluq4wUazHjmCDBCqXF.:|' package/base-files/files/etc/shadow
+          fi
+
+          # 设置默认 IP
+          OPENWRT_IP="${{ inputs.openwrt_ip }}"
+          DEFAULT_IP="192.168.1.1"
+          if [[ -n "${OPENWRT_IP}" && "${OPENWRT_IP}" != "${DEFAULT_IP}" ]]; then
+            sed -i "/lan) ipad=\${ipaddr:-/s/\${ipaddr:-\"[^\"]*\"}/\${ipaddr:-\"${OPENWRT_IP}\"}/" package/base-files/*/bin/config_generate
+          fi
+
+          # 设置时区
+          sed -i 's/CONFIG_TARGET_OPT_UART=.*//' .config || true
+          mkdir -p files/etc/uci-defaults
+          cat > files/etc/uci-defaults/99-custom << 'INITEOF'
+          #!/bin/sh
+          uci set system.@system[0].timezone='CST-8'
+          uci set system.@system[0].zonename='Asia/Shanghai'
+          uci commit system
+          exit 0
+          INITEOF
+          chmod +x files/etc/uci-defaults/99-custom
+
+      - name: Download packages
+        run: |
+          cd openwrt/
+          make download -j8
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Get source hash for cache key
+        id: hash
+        run: |
+          cd openwrt/
+          source_hash=$(git rev-parse HEAD)
+          echo "source_hash=${source_hash}" >> ${GITHUB_OUTPUT}
+
+      - name: Cache ccache
+        uses: actions/cache@v5
+        with:
+          path: /builder/openwrt/.ccache
+          key: imx8mn-openwrt-${{ steps.hash.outputs.source_hash }}
+          restore-keys: |
+            imx8mn-openwrt-
+
+      - name: Compile
+        id: compile
+        run: |
+          cd openwrt/
+          echo "Compiling with $(nproc) threads"
+          make -j$(($(nproc) + 1)) V=s || make -j1 || make -j1 V=s
+
+          echo ""
+          echo "=== Build output ==="
+          ls -alh bin/targets/imx/cortexa53/* || true
+
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      # ============================================
+      # 编译 U-Boot for i.MX8MN EVK
+      # 生成 flash.bin（SPL + U-Boot + DDR PHY + ATF）
+      # 用于 USB 烧录到 eMMC
+      # ============================================
+      - name: Build U-Boot for i.MX8MN
+        id: uboot
+        if: ${{ steps.compile.outputs.status == 'success' }}
+        run: |
+          set -ex
+
+          # 安装额外依赖
+          sudo apt-get -y install device-tree-compiler python3-pyelftools
+
+          # 1. 克隆 U-Boot mainline
+          git clone --depth=1 https://github.com/u-boot/u-boot.git /builder/u-boot
+          cd /builder/u-boot
+
+          # 2. 下载 NXP i.MX8MN 固件（DDR PHY + AHAB）
+          # 从 NXP 官方 imx-firmware 仓库获取
+          FW_DIR="/builder/firmware"
+          mkdir -p "${FW_DIR}"
+
+          # i.MX8MN DDR4 固件
+          wget -q -O "${FW_DIR}/ddr4_imem_1d.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/ddr4_imem_1d.bin" || true
+          wget -q -O "${FW_DIR}/ddr4_dmem_1d.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/ddr4_dmem_1d.bin" || true
+          wget -q -O "${FW_DIR}/ddr4_imem_2d.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/ddr4_imem_2d.bin" || true
+          wget -q -O "${FW_DIR}/ddr4_dmem_2d.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/ddr4_dmem_2d.bin" || true
+
+          # i.MX8MN LPDDR4 固件
+          wget -q -O "${FW_DIR}/lpddr4_pmu_train_1d_imem.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/lpddr4_pmu_train_1d_imem.bin" || true
+          wget -q -O "${FW_DIR}/lpddr4_pmu_train_1d_dmem.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/lpddr4_pmu_train_1d_dmem.bin" || true
+          wget -q -O "${FW_DIR}/lpddr4_pmu_train_2d_imem.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/lpddr4_pmu_train_2d_imem.bin" || true
+          wget -q -O "${FW_DIR}/lpddr4_pmu_train_2d_dmem.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/lpddr4_pmu_train_2d_dmem.bin" || true
+
+          # 3. 构建 ARM Trusted Firmware (bl31.bin)
+          git clone --depth=1 https://github.com/nxp-imx/imx-atf.git /builder/imx-atf
+          cd /builder/imx-atf
+          make clean
+          make CROSS_COMPILE=aarch64-linux-gnu- PLAT=imx8mn bl31 -j$(nproc)
+          cp build/imx8mn/release/bl31.bin "${FW_DIR}/bl31.bin"
+
+          # 4. 编译 U-Boot
+          cd /builder/u-boot
+          make imx8mn_evk_defconfig
+
+          # 将固件文件复制到 U-Boot 期望的位置
+          cp "${FW_DIR}"/*.bin . 2>/dev/null || true
+
+          # 设置 binman 需要的固件路径
+          export BL31="${FW_DIR}/bl31.bin"
+          export DDR4_IMEM_1D="${FW_DIR}/ddr4_imem_1d.bin"
+          export DDR4_DMEM_1D="${FW_DIR}/ddr4_dmem_1d.bin"
+          export DDR4_IMEM_2D="${FW_DIR}/ddr4_imem_2d.bin"
+          export DDR4_DMEM_2D="${FW_DIR}/ddr4_dmem_2d.bin"
+          export LPDDR4_PMU_TRAIN_1D_IMEM="${FW_DIR}/lpddr4_pmu_train_1d_imem.bin"
+          export LPDDR4_PMU_TRAIN_1D_DMEM="${FW_DIR}/lpddr4_pmu_train_1d_dmem.bin"
+          export LPDDR4_PMU_TRAIN_2D_IMEM="${FW_DIR}/lpddr4_pmu_train_2d_imem.bin"
+          export LPDDR4_PMU_TRAIN_2D_DMEM="${FW_DIR}/lpddr4_pmu_train_2d_dmem.bin"
+
+          make CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) flash.bin || {
+            echo "flash.bin generation failed, trying alternative..."
+            make CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) spl/u-boot-spl.bin u-boot.itb
+            # 手动用 binman 生成
+            tools/binman/binman build -u -d arch/arm/dts/imx8mn-evk.dts -O . --mkimage ./tools/mkimage
+          }
+
+          # 验证 flash.bin
+          ls -alh flash.bin || { echo "ERROR: flash.bin not found"; exit 1; }
+          echo "flash.bin size: $(du -h flash.bin | cut -f1)"
+
+          # 复制到工作区输出目录
+          mkdir -p ${{ github.workspace }}/openwrt/output
+          cp flash.bin ${{ github.workspace }}/openwrt/output/u-boot-imx8mn-evk_flash.bin
+
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Prepare release artifacts
+        if: ${{ steps.compile.outputs.status == 'success' }}
+        run: |
+          cd openwrt/
+          mkdir -p output
+
+          # 复制 SD 卡镜像（也适用于 eMMC user area 烧录）
+          cp -f bin/targets/imx/cortexa53/*.img.gz output/ 2>/dev/null || true
+          cp -f bin/targets/imx/cortexa53/*.img output/ 2>/dev/null || true
+
+          # 复制 rootfs.tar.gz
+          cp -f bin/targets/imx/cortexa53/*rootfs.tar.gz output/ 2>/dev/null || true
+
+          # 复制 config
+          cp -f .config output/config
+
+          # 复制 manifest
+          cp -f bin/targets/imx/cortexa53/*.manifest output/ 2>/dev/null || true
+
+          # 重命名文件
+          OW_VERSION="${{ env.OW_VERSION }}"
+          DATE=$(date +%Y.%m.%d)
+          cd output
+          for f in *.img.gz; do
+            [[ -f "$f" ]] && mv "$f" "imx8mn-evk_openwrt-${OW_VERSION}_${DATE}.img.gz"
+          done
+          for f in *.img; do
+            [[ -f "$f" ]] && mv "$f" "imx8mn-evk_openwrt-${OW_VERSION}_${DATE}.img"
+          done
+
+          # ============================================
+          # 创建 uuu 烧录脚本
+          # ============================================
+          cat > uuu_emmc_flash.auto << 'UUUEOF'
+          # uuu script for i.MX8MN eMMC flashing via USB
+          # 使用方法:
+          #   1. 设置 boot 开关到 Serial Download Mode
+          #   2. 连接 USB 线
+          #   3. 运行: uuu uuu_emmc_flash.auto
+          #
+          # 文件要求:
+          #   - flash.bin (U-Boot SPL + U-Boot proper)
+          #   - imx8mn-evk_openwrt-*.img (OpenWrt 镜像)
+
+          # Step 1: 通过 SDP 加载 flash.bin（U-Boot SPL）
+          SDPS: boot -f flash.bin
+
+          # Step 2: 等待 U-Boot 启动 fastboot
+          FB: ucmd setenv fastboot_dev 2
+          FB: ucmd setenv mmcpart 1
+
+          # Step 3: 写入 flash.bin 到 eMMC boot partition
+          FB: flash bootloader flash.bin
+
+          # Step 4: 切换到 eMMC user area
+          FB: ucmd setenv mmcpart 0
+
+          # Step 5: 写入 OpenWrt 镜像到 eMMC user area
+          FB: flash -raw2sparse imx8mn-evk_openwrt-*.img
+
+          # Step 6: 完成
+          FB: done
+          UUUEOF
+
+          # 创建简化版 uuu 脚本（手动指定文件名）
+          cat > uuu_emmc_flash.sh << 'UUUSHEOF'
+          #!/bin/bash
+          # uuu 烧录脚本 for i.MX8MN eMMC
+          # 安装 uuu: pip3 install uuu
+          # 或: https://github.com/nxp-imx/mfgtools/releases
+          set -e
+
+          FLASH_BIN="$1"
+          OWRT_IMG="$2"
+
+          if [[ -z "${FLASH_BIN}" || -z "${OWRT_IMG}" ]]; then
+            echo "Usage: $0 <flash.bin> <openwrt.img>"
+            echo "Example: $0 u-boot-imx8mn-evk_flash.bin imx8mn-evk_openwrt-v25.12.5_2026.09.01.img"
+            exit 1
+          fi
+
+          if [[ ! -f "${FLASH_BIN}" ]]; then
+            echo "Error: ${FLASH_BIN} not found"
+            exit 1
+          fi
+
+          if [[ ! -f "${OWRT_IMG}" ]]; then
+            echo "Error: ${OWRT_IMG} not found"
+            exit 1
+          fi
+
+          echo "=== i.MX8MN eMMC Flash Tool ==="
+          echo "flash.bin: ${FLASH_BIN}"
+          echo "OpenWrt image: ${OWRT_IMG}"
+          echo ""
+          echo "请确认:"
+          echo "  1. Boot 开关已设置为 Serial Download Mode"
+          echo "  2. USB 线已连接"
+          echo ""
+          read -p "按 Enter 开始烧录..."
+
+          # 创建临时 uuu 脚本
+          TMP_SCRIPT=$(mktemp /tmp/uuu_XXXXX.auto)
+          cat > "${TMP_SCRIPT}" << EOF
+          SDPS: boot -f ${FLASH_BIN}
+          FB: ucmd setenv fastboot_dev 2
+          FB: ucmd setenv mmcpart 1
+          FB: flash bootloader ${FLASH_BIN}
+          FB: ucmd setenv mmcpart 0
+          FB: flash -raw2sparse ${OWRT_IMG}
+          FB: done
+          EOF
+
+          uuu "${TMP_SCRIPT}"
+          rm -f "${TMP_SCRIPT}"
+          echo ""
+          echo "=== 烧录完成！==="
+          echo "将 boot 开关切回 eMMC 启动模式，重新上电即可"
+          UUUSHEOF
+          chmod +x uuu_emmc_flash.sh
+
+          echo "=== Output files ==="
+          ls -alh
+
+      - name: Upload to Release
+        if: ${{ steps.compile.outputs.status == 'success' }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.build_tag }}
+          name: OpenWrt for i.MX8MN EVK
+          files: |
+            openwrt/output/*
+            openwrt/output/uuu_emmc_flash.auto
+            openwrt/output/uuu_emmc_flash.sh
+          allow_updates: true
+          make_latest: true
+          gh_token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            ### i.MX8MN EVK OpenWrt Image
+            - Target: `imx/cortexa53`
+            - Profile: `imx8m` (includes `imx8mn-evk.dts`)
+            - Version: `${{ env.OW_VERSION }}`
+            - Default IP: `${{ inputs.openwrt_ip }}`
+            - Default username: `root`
+            - Default password: `${{ inputs.root_password }}`
+
+            ### 文件列表
+            | 文件 | 说明 |
+            |------|------|
+            | `imx8mn-evk_*.img.gz` | OpenWrt 系统镜像（eMMC user area） |
+            | `u-boot-imx8mn-evk_flash.bin` | U-Boot SPL + proper（eMMC boot partition） |
+            | `uuu_emmc_flash.auto` | uuu 自动烧录脚本 |
+            | `uuu_emmc_flash.sh` | uuu 烧录辅助脚本 |
+
+            ### USB 烧录方法（仅 eMMC）
+
+            1. 安装 uuu 工具：
+               ```bash
+               pip3 install uuu
+               ```
+
+            2. 设置 boot 开关到 **Serial Download Mode**
+
+            3. 连接 USB 线
+
+            4. 解压镜像：
+               ```bash
+               gunzip imx8mn-evk_*.img.gz
+               ```
+
+            5. 运行烧录脚本：
+               ```bash
+               ./uuu_emmc_flash.sh u-boot-imx8mn-evk_flash.bin imx8mn-evk_*.img
+               ```
+
+            6. 烧录完成后，将 boot 开关切回 **eMMC 启动模式**，重新上电
+
+            ### SD 卡烧录方法（如有 SD 卡）
+            ```bash
+            gunzip imx8mn-evk_*.img.gz
+            sudo dd if=imx8mn-evk_*.img of=/dev/sdX bs=1M conv=fsync
+            sync
+            ```
