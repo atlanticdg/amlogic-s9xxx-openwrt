@@ -286,82 +286,84 @@ jobs:
           set -ex
 
           # 安装额外依赖
-          sudo apt-get -y install device-tree-compiler python3-pyelftools gcc-aarch64-linux-gnu
+          sudo apt-get -y install device-tree-compiler python3-pyelftools gcc-aarch64-linux-gnu python3-setuptools python3-pip bison flex
+
+          # 安装 binman 依赖
+          pip3 install --break-system-packages pyelftools 2>/dev/null || true
 
           # 设置工具链变量
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          export CC=aarch64-linux-gnu-gcc
-          export AR=aarch64-linux-gnu-ar
-          export LD=aarch64-linux-gnu-ld
-          export STRIP=aarch64-linux-gnu-strip
-          export OBJCOPY=aarch64-linux-gnu-objcopy
-          export OBJDUMP=aarch64-linux-gnu-objdump
-          export NM=aarch64-linux-gnu-nm
 
-          # 1. 克隆 U-Boot mainline
-          git clone --depth=1 https://github.com/u-boot/u-boot.git /builder/u-boot
+          # 1. 克隆 NXP 官方 U-Boot（对 i.MX 支持最好）
+          # 用 lf_v2024.04 分支，这是 NXP 最新稳定分支，imx8mn 支持完整
+          git clone --depth=1 -b lf_v2024.04 https://github.com/nxp-imx/uboot-imx.git /builder/u-boot || {
+            # 回退到 mainline 旧版本（已知对 imx8mn 支持稳定）
+            git clone --depth=1 -b v2024.10 https://github.com/u-boot/u-boot.git /builder/u-boot
+          }
           cd /builder/u-boot
 
-          # 2. 下载 NXP i.MX8MN 固件（DDR PHY + AHAB）
-          # 从 NXP 官方 imx-firmware 仓库获取
+          # 2. 下载 NXP i.MX8MN 固件（DDR PHY）
           FW_DIR="/builder/firmware"
           mkdir -p "${FW_DIR}"
 
           # i.MX8MN DDR4 固件
+          wget -q -O "${FW_DIR}/ddr4_imem_1d.bin" "https://github.com/nxp-imx/imx-firmware/raw/lf-6.6.3_1.0.0/firmware/ddr4_imem_1d.bin" || \
           wget -q -O "${FW_DIR}/ddr4_imem_1d.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/ddr4_imem_1d.bin" || true
+          wget -q -O "${FW_DIR}/ddr4_dmem_1d.bin" "https://github.com/nxp-imx/imx-firmware/raw/lf-6.6.3_1.0.0/firmware/ddr4_dmem_1d.bin" || \
           wget -q -O "${FW_DIR}/ddr4_dmem_1d.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/ddr4_dmem_1d.bin" || true
+          wget -q -O "${FW_DIR}/ddr4_imem_2d.bin" "https://github.com/nxp-imx/imx-firmware/raw/lf-6.6.3_1.0.0/firmware/ddr4_imem_2d.bin" || \
           wget -q -O "${FW_DIR}/ddr4_imem_2d.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/ddr4_imem_2d.bin" || true
+          wget -q -O "${FW_DIR}/ddr4_dmem_2d.bin" "https://github.com/nxp-imx/imx-firmware/raw/lf-6.6.3_1.0.0/firmware/ddr4_dmem_2d.bin" || \
           wget -q -O "${FW_DIR}/ddr4_dmem_2d.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/ddr4_dmem_2d.bin" || true
 
           # i.MX8MN LPDDR4 固件
+          wget -q -O "${FW_DIR}/lpddr4_pmu_train_1d_imem.bin" "https://github.com/nxp-imx/imx-firmware/raw/lf-6.6.3_1.0.0/firmware/lpddr4_pmu_train_1d_imem.bin" || \
           wget -q -O "${FW_DIR}/lpddr4_pmu_train_1d_imem.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/lpddr4_pmu_train_1d_imem.bin" || true
+          wget -q -O "${FW_DIR}/lpddr4_pmu_train_1d_dmem.bin" "https://github.com/nxp-imx/imx-firmware/raw/lf-6.6.3_1.0.0/firmware/lpddr4_pmu_train_1d_dmem.bin" || \
           wget -q -O "${FW_DIR}/lpddr4_pmu_train_1d_dmem.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/lpddr4_pmu_train_1d_dmem.bin" || true
+          wget -q -O "${FW_DIR}/lpddr4_pmu_train_2d_imem.bin" "https://github.com/nxp-imx/imx-firmware/raw/lf-6.6.3_1.0.0/firmware/lpddr4_pmu_train_2d_imem.bin" || \
           wget -q -O "${FW_DIR}/lpddr4_pmu_train_2d_imem.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/lpddr4_pmu_train_2d_imem.bin" || true
+          wget -q -O "${FW_DIR}/lpddr4_pmu_train_2d_dmem.bin" "https://github.com/nxp-imx/imx-firmware/raw/lf-6.6.3_1.0.0/firmware/lpddr4_pmu_train_2d_dmem.bin" || \
           wget -q -O "${FW_DIR}/lpddr4_pmu_train_2d_dmem.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/lpddr4_pmu_train_2d_dmem.bin" || true
 
           # 3. 构建 ARM Trusted Firmware (bl31.bin)
-          git clone --depth=1 https://github.com/nxp-imx/imx-atf.git /builder/imx-atf
+          # 用 NXP imx-atf，对 i.MX8MN 支持最好
+          git clone --depth=1 -b lf_v2024.04 https://github.com/nxp-imx/imx-atf.git /builder/imx-atf || \
+          git clone --depth=1 -b v2.10.0 https://github.com/ARM-software/arm-trusted-firmware.git /builder/imx-atf
           cd /builder/imx-atf
-          make clean
-          make CROSS_COMPILE=aarch64-linux-gnu- PLAT=imx8mn bl31 -j$(nproc) || {
-            echo "ATF build failed, trying mainline TF-A..."
-            cd /builder
-            git clone --depth=1 https://github.com/ARM-software/arm-trusted-firmware.git /builder/tfa
-            cd /builder/tfa
-            make CROSS_COMPILE=aarch64-linux-gnu- PLAT=imx8mn bl31 -j$(nproc)
-            cp build/imx8mn/release/bl31.bin "${FW_DIR}/bl31.bin"
-          }
-          [[ -f "${FW_DIR}/bl31.bin" ]] || cp build/imx8*/release/bl31.bin "${FW_DIR}/bl31.bin" 2>/dev/null || true
+          make CROSS_COMPILE=aarch64-linux-gnu- PLAT=imx8mn bl31 -j$(nproc)
+          BL31_PATH=$(find build -name bl31.bin | head -1)
+          cp "${BL31_PATH}" "${FW_DIR}/bl31.bin"
+          echo "ATF bl31.bin: ${BL31_PATH}"
 
           # 4. 编译 U-Boot
           cd /builder/u-boot
+
+          # 先清理可能存在的旧配置
+          make distclean 2>/dev/null || true
+
+          # 配置 defconfig
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- imx8mn_evk_defconfig
 
-          # 将固件文件复制到 U-Boot 期望的位置
+          # 检查配置是否成功生成 .config
+          ls -la .config || { echo "ERROR: .config not generated"; exit 1; }
+
+          # 将固件文件复制到 U-Boot 期望的位置（binman 会从当前目录找）
           cp "${FW_DIR}"/*.bin . 2>/dev/null || true
 
-          # 设置 binman 需要的固件路径
-          export BL31="${FW_DIR}/bl31.bin"
-          export DDR4_IMEM_1D="${FW_DIR}/ddr4_imem_1d.bin"
-          export DDR4_DMEM_1D="${FW_DIR}/ddr4_dmem_1d.bin"
-          export DDR4_IMEM_2D="${FW_DIR}/ddr4_imem_2d.bin"
-          export DDR4_DMEM_2D="${FW_DIR}/ddr4_dmem_2d.bin"
-          export LPDDR4_PMU_TRAIN_1D_IMEM="${FW_DIR}/lpddr4_pmu_train_1d_imem.bin"
-          export LPDDR4_PMU_TRAIN_1D_DMEM="${FW_DIR}/lpddr4_pmu_train_1d_dmem.bin"
-          export LPDDR4_PMU_TRAIN_2D_IMEM="${FW_DIR}/lpddr4_pmu_train_2d_imem.bin"
-          export LPDDR4_PMU_TRAIN_2D_DMEM="${FW_DIR}/lpddr4_pmu_train_2d_dmem.bin"
-
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) flash.bin || {
-            echo "flash.bin generation failed, trying alternative..."
-            make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) spl/u-boot-spl.bin u-boot.itb
-            # 手动用 binman 生成
-            tools/binman/binman build -u -d arch/arm/dts/imx8mn-evk.dts -O . --mkimage ./tools/mkimage
-          }
+          # 编译 flash.bin（SPL + U-Boot + ATF + DDR 固件）
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) flash.bin 2>&1 | tail -50
 
           # 验证 flash.bin
-          ls -alh flash.bin || { echo "ERROR: flash.bin not found"; exit 1; }
-          echo "flash.bin size: $(du -h flash.bin | cut -f1)"
+          if [[ -f flash.bin ]]; then
+            echo "flash.bin size: $(du -h flash.bin | cut -f1)"
+          else
+            echo "ERROR: flash.bin not found!"
+            echo "Trying alternative outputs..."
+            ls -la u-boot*.bin u-boot.itb spl/u-boot-spl.bin 2>/dev/null || true
+            exit 1
+          fi
 
           # 复制到工作区输出目录
           mkdir -p ${{ github.workspace }}/openwrt/output
