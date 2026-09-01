@@ -286,7 +286,18 @@ jobs:
           set -ex
 
           # 安装额外依赖
-          sudo apt-get -y install device-tree-compiler python3-pyelftools
+          sudo apt-get -y install device-tree-compiler python3-pyelftools gcc-aarch64-linux-gnu
+
+          # 设置工具链变量
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CC=aarch64-linux-gnu-gcc
+          export AR=aarch64-linux-gnu-ar
+          export LD=aarch64-linux-gnu-ld
+          export STRIP=aarch64-linux-gnu-strip
+          export OBJCOPY=aarch64-linux-gnu-objcopy
+          export OBJDUMP=aarch64-linux-gnu-objdump
+          export NM=aarch64-linux-gnu-nm
 
           # 1. 克隆 U-Boot mainline
           git clone --depth=1 https://github.com/u-boot/u-boot.git /builder/u-boot
@@ -313,12 +324,19 @@ jobs:
           git clone --depth=1 https://github.com/nxp-imx/imx-atf.git /builder/imx-atf
           cd /builder/imx-atf
           make clean
-          make CROSS_COMPILE=aarch64-linux-gnu- PLAT=imx8mn bl31 -j$(nproc)
-          cp build/imx8mn/release/bl31.bin "${FW_DIR}/bl31.bin"
+          make CROSS_COMPILE=aarch64-linux-gnu- PLAT=imx8mn bl31 -j$(nproc) || {
+            echo "ATF build failed, trying mainline TF-A..."
+            cd /builder
+            git clone --depth=1 https://github.com/ARM-software/arm-trusted-firmware.git /builder/tfa
+            cd /builder/tfa
+            make CROSS_COMPILE=aarch64-linux-gnu- PLAT=imx8mn bl31 -j$(nproc)
+            cp build/imx8mn/release/bl31.bin "${FW_DIR}/bl31.bin"
+          }
+          [[ -f "${FW_DIR}/bl31.bin" ]] || cp build/imx8*/release/bl31.bin "${FW_DIR}/bl31.bin" 2>/dev/null || true
 
           # 4. 编译 U-Boot
           cd /builder/u-boot
-          make imx8mn_evk_defconfig
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- imx8mn_evk_defconfig
 
           # 将固件文件复制到 U-Boot 期望的位置
           cp "${FW_DIR}"/*.bin . 2>/dev/null || true
@@ -334,9 +352,9 @@ jobs:
           export LPDDR4_PMU_TRAIN_2D_IMEM="${FW_DIR}/lpddr4_pmu_train_2d_imem.bin"
           export LPDDR4_PMU_TRAIN_2D_DMEM="${FW_DIR}/lpddr4_pmu_train_2d_dmem.bin"
 
-          make CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) flash.bin || {
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) flash.bin || {
             echo "flash.bin generation failed, trying alternative..."
-            make CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) spl/u-boot-spl.bin u-boot.itb
+            make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) spl/u-boot-spl.bin u-boot.itb
             # 手动用 binman 生成
             tools/binman/binman build -u -d arch/arm/dts/imx8mn-evk.dts -O . --mkimage ./tools/mkimage
           }
