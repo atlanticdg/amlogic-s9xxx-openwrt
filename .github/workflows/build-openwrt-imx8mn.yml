@@ -276,91 +276,90 @@ jobs:
 
       # ============================================
       # 编译 U-Boot for i.MX8MN EVK
-      # 通过给 OpenWrt 的 uboot-imx 包打补丁，利用 OpenWrt 编译系统
+      # 用 OpenWrt 工具链直接编译 U-Boot 2024.10
       # ============================================
       - name: Build U-Boot for i.MX8MN
         id: uboot
         if: ${{ steps.compile.outputs.status == 'success' }}
         run: |
           set -ex
-          cd openwrt/
-
-          # 安装 ATF 编译依赖
-          sudo apt-get -y install gcc-aarch64-linux-gnu
-
-          # 1. 给 uboot-imx/Makefile 打补丁，添加 imx8mn_evk 支持
-          # 参照 kontron-osm-s-mx8mp 的定义格式
-          cat >> package/boot/uboot-imx/Makefile << 'PATCH'
-
-          define U-Boot/imx8mn_evk
-            NAME:=NXP i.MX8MN EVK
-            DEPENDS:=+firmware-imx
-            UBOOT_IMAGE:=flash.bin
-            BUILD_SUBTARGET:=cortexa53
-            BUILD_DEVICES:=nxp_imx8mn-evk
-          endef
-          PATCH
-
-          # 将 imx8mn_evk 加入 UBOOT_TARGETS
-          sed -i 's/UBOOT_TARGETS := \\/UBOOT_TARGETS := \\\n\timx8mn_evk \\/' package/boot/uboot-imx/Makefile
-
-          # 2. 构建 ARM Trusted Firmware (bl31.bin)
-          # OpenWrt 可能没有 trusted-firmware-a-imx8mn 包，手动编译
           cd ${{ github.workspace }}
+
+          # 安装依赖
+          sudo apt-get -y install python3-pyelftools python3-setuptools bison flex
+
+          # 找到 OpenWrt 工具链路径
+          TC_DIR=$(find openwrt/staging_dir/toolchain-* -maxdepth 0 -type d | head -1)
+          TC_PREFIX=$(find "${TC_DIR}/bin" -name "aarch64-openwrt-linux-*gcc" | head -1 | sed 's/gcc$//')
+          echo "Toolchain: ${TC_DIR}"
+          echo "Prefix: ${TC_PREFIX}"
+
+          # 找到 staging_dir image 目录
+          STAGING_IMG=$(find openwrt/staging_dir/target-* -maxdepth 0 -type d | head -1)/image
+          mkdir -p "${STAGING_IMG}"
+          echo "Staging image dir: ${STAGING_IMG}"
+
+          # 1. 构建 ARM Trusted Firmware (bl31.bin)
           git clone --depth=1 -b v2.10.0 https://github.com/ARM-software/arm-trusted-firmware.git atf || \
           git clone --depth=1 https://github.com/ARM-software/arm-trusted-firmware.git atf
           cd atf
           make CROSS_COMPILE=aarch64-linux-gnu- PLAT=imx8mn bl31 -j$(nproc) || {
-            echo "ATF build failed, trying NXP imx-atf..."
+            echo "Mainline ATF failed, trying NXP imx-atf..."
             cd ${{ github.workspace }}
             git clone --depth=1 https://github.com/nxp-imx/imx-atf.git atf-nxp
             cd atf-nxp
             make CROSS_COMPILE=aarch64-linux-gnu- PLAT=imx8mn bl31 -j$(nproc)
           }
-          BL31_PATH=$(find build -name bl31.bin | head -1)
-          echo "ATF bl31.bin: ${BL31_PATH}"
+          find build -name bl31.bin -exec cp {} "${STAGING_IMG}/bl31_imx8mn.bin" \;
+          echo "bl31.bin: $(ls -la ${STAGING_IMG}/bl31_imx8mn.bin)"
 
-          # 3. 将 bl31.bin 放到 OpenWrt staging 目录
-          cd ${{ github.workspace }}/openwrt/
-          STAGING_DIR=$(cd staging_dir/target-* 2>/dev/null && pwd || echo "staging_dir")
-          mkdir -p "${STAGING_DIR}/image"
-          find ${{ github.workspace }}/atf/build -name bl31.bin -exec cp {} "${STAGING_DIR}/image/bl31_imx8mn.bin" \;
-          echo "bl31.bin copied to: ${STAGING_DIR}/image/bl31_imx8mn.bin"
-          ls -la "${STAGING_DIR}/image/bl31_imx8mn.bin"
+          # 2. 克隆 U-Boot 2024.10（有完整的 i.MX8MN flash.bin/binman 支持）
+          cd ${{ github.workspace }}
+          git clone --depth=1 -b v2024.10 https://github.com/u-boot/u-boot.git u-boot-src || \
+          git clone --depth=1 https://github.com/u-boot/u-boot.git u-boot-src
+          cd u-boot-src
 
-          # 4. 在 OpenWrt config 中启用 U-Boot 包
-          echo "CONFIG_PACKAGE_u-boot-imx8mn_evk=y" >> .config
-          echo "CONFIG_PACKAGE_uboot-imx=y" >> .config
-          make defconfig
-          make package/uboot-imx/compile V=s -j$(nproc) || {
-            echo "U-Boot compile via OpenWrt failed, trying direct make..."
-            # 直接在 OpenWrt 环境中编译
-            make package/uboot-imx/compile V=s -j1
-          }
+          # 3. 关键修复：手动创建 asm 目录，解决符号链接问题
+          mkdir -p arch/arm64/include/asm
 
-          # 5. 查找编译出的 flash.bin
-          FLASH_BIN=$(find build_dir -name "flash.bin" -path "*imx8mn*" | head -1)
-          if [[ -z "${FLASH_BIN}" ]]; then
-            # 尝试其他路径
-            FLASH_BIN=$(find build_dir -name "flash.bin" | head -1)
+          # 4. 配置
+          make ARCH=arm64 CROSS_COMPILE="${TC_PREFIX}" imx8mn_evk_defconfig
+
+          # 验证配置
+          ls -la .config
+
+          # 5. 检查 firmware-imx 是否已在 staging 目录（由 OpenWrt 编译安装）
+          FW_IMX_DIR=$(find openwrt/staging_dir -type d -name "firmware-imx" 2>/dev/null | head -1 || echo "")
+          if [[ -z "${FW_IMX_DIR}" ]]; then
+            echo "firmware-imx not found in staging, downloading manually..."
+            # 下载 DDR PHY 固件
+            for fw in ddr4_imem_1d ddr4_dmem_1d ddr4_imem_2d ddr4_dmem_2d \
+                       lpddr4_pmu_train_1d_imem lpddr4_pmu_train_1d_dmem \
+                       lpddr4_pmu_train_2d_imem lpddr4_pmu_train_2d_dmem; do
+              wget -q -O "${fw}.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/${fw}.bin" 2>/dev/null || \
+              wget -q -O "${fw}.bin" "https://github.com/nxp-imx/imx-firmware/raw/lf-6.6.3_1.0.0/firmware/${fw}.bin" 2>/dev/null || true
+            done
+          else
+            echo "firmware-imx found at: ${FW_IMX_DIR}"
+            # 复制固件到当前目录（binman 会从当前目录查找）
+            cp "${FW_IMX_DIR}"/*.bin . 2>/dev/null || true
           fi
-          if [[ -z "${FLASH_BIN}" ]]; then
-            # 尝试 staging 目录
-            FLASH_BIN=$(find staging_dir -name "*flash*" -path "*imx8mn*" | head -1)
-          fi
 
-          echo "flash.bin found at: ${FLASH_BIN}"
+          # 6. 编译 flash.bin
+          make ARCH=arm64 CROSS_COMPILE="${TC_PREFIX}" \
+               BL31="${STAGING_IMG}/bl31_imx8mn.bin" \
+               -j$(nproc) flash.bin 2>&1 | tail -80
 
-          if [[ -n "${FLASH_BIN}" && -f "${FLASH_BIN}" ]]; then
-            mkdir -p output
-            cp "${FLASH_BIN}" output/u-boot-imx8mn-evk_flash.bin
-            echo "flash.bin size: $(du -h "${FLASH_BIN}" | cut -f1)"
+          # 7. 验证
+          if [[ -f flash.bin ]]; then
+            echo "flash.bin size: $(du -h flash.bin | cut -f1)"
+            mkdir -p ${{ github.workspace }}/openwrt/output
+            cp flash.bin ${{ github.workspace }}/openwrt/output/u-boot-imx8mn-evk_flash.bin
             echo "status=success" >> ${GITHUB_OUTPUT}
           else
-            echo "WARNING: flash.bin not found, U-Boot build may have failed"
-            echo "Listing build artifacts..."
-            find build_dir -name "flash.bin" -o -name "u-boot*" 2>/dev/null | head -20
-            find staging_dir -name "flash*" -o -name "u-boot*" 2>/dev/null | head -20
+            echo "ERROR: flash.bin not found"
+            echo "Build artifacts:"
+            find . -name "flash.bin" -o -name "u-boot*" -o -name "*.bin" 2>/dev/null | head -20
             echo "status=failed" >> ${GITHUB_OUTPUT}
           fi
 
