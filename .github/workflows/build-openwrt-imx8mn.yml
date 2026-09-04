@@ -289,30 +289,28 @@ jobs:
           sudo apt-get -y install python3-pyelftools python3-setuptools bison flex
 
           # 找到 OpenWrt 工具链路径
-          TC_DIR=$(find openwrt/staging_dir/toolchain-* -maxdepth 0 -type d | head -1)
+          TC_DIR=$(cd openwrt/staging_dir/toolchain-* 2>/dev/null && pwd | head -1)
           TC_PREFIX=$(find "${TC_DIR}/bin" -name "aarch64-openwrt-linux-*gcc" | head -1 | sed 's/gcc$//')
           echo "Toolchain: ${TC_DIR}"
           echo "Prefix: ${TC_PREFIX}"
 
           # 找到 staging_dir image 目录
-          STAGING_IMG=$(find openwrt/staging_dir/target-* -maxdepth 0 -type d | head -1)/image
+          STAGING_IMG=$(cd openwrt/staging_dir/target-* 2>/dev/null && pwd | head -1)/image
           mkdir -p "${STAGING_IMG}"
           echo "Staging image dir: ${STAGING_IMG}"
 
           # 1. 构建 ARM Trusted Firmware (bl31.bin)
-          # 使用 OpenWrt 工具链（aarch64-openwrt-linux-musl-），不依赖系统 gcc-aarch64-linux-gnu
+          # 安装系统交叉编译器用于 ATF 编译（ATF 需要完整的 aarch64 gcc）
+          sudo apt-get -y install gcc-aarch64-linux-gnu
           git clone --depth=1 -b v2.10.0 https://github.com/ARM-software/arm-trusted-firmware.git atf || \
           git clone --depth=1 https://github.com/ARM-software/arm-trusted-firmware.git atf
           cd atf
-          # 确保工具链路径在 PATH 中
-          export PATH="${TC_DIR}/bin:${PATH}"
-          make CROSS_COMPILE="${TC_PREFIX}" PLAT=imx8mn bl31 -j$(nproc) || {
+          make CROSS_COMPILE=aarch64-linux-gnu- PLAT=imx8mn bl31 -j$(nproc) || {
             echo "Mainline ATF failed, trying NXP imx-atf..."
             cd ${{ github.workspace }}
             git clone --depth=1 https://github.com/nxp-imx/imx-atf.git atf-nxp
             cd atf-nxp
-            export PATH="${TC_DIR}/bin:${PATH}"
-            make CROSS_COMPILE="${TC_PREFIX}" PLAT=imx8mn bl31 -j$(nproc)
+            make CROSS_COMPILE=aarch64-linux-gnu- PLAT=imx8mn bl31 -j$(nproc)
           }
           find build -name bl31.bin -exec cp {} "${STAGING_IMG}/bl31_imx8mn.bin" \;
           echo "bl31.bin: $(ls -la ${STAGING_IMG}/bl31_imx8mn.bin)"
@@ -333,20 +331,22 @@ jobs:
           ls -la .config
 
           # 5. 检查 firmware-imx 是否已在 staging 目录（由 OpenWrt 编译安装）
-          FW_IMX_DIR=$(find openwrt/staging_dir -type d -name "firmware-imx" 2>/dev/null | head -1 || echo "")
+          # 注意：此时在 u-boot-src 目录下，需要用绝对路径
+          FW_IMX_DIR=$(find "${{ github.workspace }}/openwrt/staging_dir" -type d -name "firmware-imx" 2>/dev/null | head -1 || echo "")
           if [[ -z "${FW_IMX_DIR}" ]]; then
             echo "firmware-imx not found in staging, downloading manually..."
-            # 下载 DDR PHY 固件
-            for fw in ddr4_imem_1d ddr4_dmem_1d ddr4_imem_2d ddr4_dmem_2d \
-                       lpddr4_pmu_train_1d_imem lpddr4_pmu_train_1d_dmem \
+            # 下载 DDR PHY 固件（i.MX8MN 使用 LPDDR4）
+            for fw in lpddr4_pmu_train_1d_imem lpddr4_pmu_train_1d_dmem \
                        lpddr4_pmu_train_2d_imem lpddr4_pmu_train_2d_dmem; do
               wget -q -O "${fw}.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/${fw}.bin" 2>/dev/null || \
               wget -q -O "${fw}.bin" "https://github.com/nxp-imx/imx-firmware/raw/lf-6.6.3_1.0.0/firmware/${fw}.bin" 2>/dev/null || true
             done
+            ls -la *.bin 2>/dev/null
           else
             echo "firmware-imx found at: ${FW_IMX_DIR}"
             # 复制固件到当前目录（binman 会从当前目录查找）
             cp "${FW_IMX_DIR}"/*.bin . 2>/dev/null || true
+            ls -la *.bin 2>/dev/null
           fi
 
           # 6. 编译 flash.bin
