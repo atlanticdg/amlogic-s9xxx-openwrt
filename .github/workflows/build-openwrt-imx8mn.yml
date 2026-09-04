@@ -324,11 +324,11 @@ jobs:
           cd ${{ github.workspace }}/openwrt/
           STAGING_DIR=$(cd staging_dir/target-* 2>/dev/null && pwd || echo "staging_dir")
           mkdir -p "${STAGING_DIR}/image"
-          cp "${{ github.workspace }}/atf/${BL31_PATH##*build/}" "${STAGING_DIR}/image/bl31_imx8mn.bin" 2>/dev/null || \
           find ${{ github.workspace }}/atf/build -name bl31.bin -exec cp {} "${STAGING_DIR}/image/bl31_imx8mn.bin" \;
+          echo "bl31.bin copied to: ${STAGING_DIR}/image/bl31_imx8mn.bin"
+          ls -la "${STAGING_DIR}/image/bl31_imx8mn.bin"
 
           # 4. 在 OpenWrt config 中启用 U-Boot 包
-          cd openwrt/
           echo "CONFIG_PACKAGE_u-boot-imx8mn_evk=y" >> .config
           echo "CONFIG_PACKAGE_uboot-imx=y" >> .config
           make defconfig
