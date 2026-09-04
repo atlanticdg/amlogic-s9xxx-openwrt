@@ -111,45 +111,59 @@ jobs:
           ./scripts/feeds install -a
 
       # ============================================
-      # 关键步骤：为 imx8m profile 添加 SD 卡镜像生成
-      # OpenWrt 的 imx8m profile 只编译内核和 DTS，不生成 SD 卡镜像
-      # 需要补丁 cortexa53.mk 添加 IMAGES 和 IMAGE 定义
+      # 关键步骤：新增 nxp_imx8mn-evk device 支持 SD 卡镜像生成
+      # 原生 imx8m device 没有 IMAGES 定义，只生成 tar.gz
+      # 参考 gateworks_venice 的实现方式，新增独立 device
       # ============================================
-      - name: Patch imx8m device for SD card image
+      - name: Add nxp_imx8mn-evk device with SD card image
         run: |
           cd openwrt/
           MK_FILE="target/linux/imx/image/cortexa53.mk"
 
-          echo "=== Before patch ==="
-          sed -n '/define Device\/imx8m/,/^endef/p' "${MK_FILE}"
+          # 1. 创建 boot script（U-Boot 启动脚本）
+          cat > target/linux/imx/image/bootscript-nxp_imx8mn-evk << 'BOOTSCR'
+          echo "Booting OpenWrt from MMC..."
+          setexpr rootpath /dev/mmcblk${bootdev}p${distro_bootpart}
+          setenv bootargs console=ttymxc1,115200n8 root=${rootpath} rootwait rw
+          if test -e ${devtype} ${devnum}:${distro_bootpart} /${fdtfile}; then
+            load ${devtype} ${devnum}:${distro_bootpart} ${fdt_addr_r} ${fdtfile}
+          fi
+          load ${devtype} ${devnum}:${distro_bootpart} ${kernel_addr_r} /Image
+          booti ${kernel_addr_r} - ${fdt_addr_r}
+          BOOTSCR
 
-          # 在 Make 中，同一个 Device 定义两次，最后一次生效
-          # 所以直接在文件末尾追加新的 imx8m 定义即可覆盖原定义
+          echo "=== Boot script created ==="
+          cat target/linux/imx/image/bootscript-nxp_imx8mn-evk
+
+          # 2. 在 cortexa53.mk 末尾追加新的 device 定义
           cat >> "${MK_FILE}" << 'PATCHEOF'
 
-          # ===== Patched: imx8m with SD card image generation =====
-          define Device/imx8m
+          # ===== Added: nxp_imx8mn-evk with SD card image =====
+          define Device/nxp_imx8mn-evk
             $(call Device/Default)
             DEVICE_VENDOR := NXP
-            DEVICE_MODEL := i.MX8M
-            DEVICE_DTS := $(basename $(notdir $(wildcard $(DTS_DIR)/freescale/imx8m*.dts)))
+            DEVICE_MODEL := i.MX8M Nano EVK
+            SOC := imx8mn
+            SUPPORTED_DEVICES := fsl,imx8mn-evk nxp,imx8mn-evk
+            DEVICE_DTS := imx8mn-evk
+            BOOT_SCRIPT := nxp_imx8mn-evk
+            FILESYSTEMS := squashfs ext4
+            PARTITION_OFFSET := 16M
             DEVICE_PACKAGES := \
               kmod-usb-dwc3 \
               kmod-usb-dwc3-imx \
               kmod-thermal-imx8m \
-              kmod-ethernet \
+              kmod-fec \
               kmod-phy-realtek
-            FILESYSTEMS := squashfs ext4
-            PARTITION_OFFSET := 16M
             IMAGES := img.gz
-            IMAGE/img.gz := boot-img-ext4 | sdcard-img-ext4 | gzip | append-metadata
+            IMAGE/img.gz := boot-scr | boot-img-ext4 | sdcard-img-ext4 | gzip | append-metadata
           endef
-          TARGET_DEVICES += imx8m
+          TARGET_DEVICES += nxp_imx8mn-evk
           PATCHEOF
 
           echo ""
-          echo "=== After patch (last imx8m definition) ==="
-          grep -A 15 "Patched: imx8m" "${MK_FILE}"
+          echo "=== Added device definition ==="
+          tail -25 "${MK_FILE}"
 
       - name: Configure build
         run: |
@@ -160,7 +174,7 @@ jobs:
           CONFIG_TARGET_imx=y
           CONFIG_TARGET_imx_cortexa53=y
           CONFIG_TARGET_MULTI_PROFILE=y
-          CONFIG_TARGET_DEVICE_imx_cortexa53_DEVICE_imx8m=y
+          CONFIG_TARGET_DEVICE_imx_cortexa53_DEVICE_nxp_imx8mn-evk=y
           CONFIG_TARGET_ROOTFS_PARTSIZE=1024
           CONFIG_TARGET_KERNEL_PARTSIZE=32
           EOF
@@ -282,89 +296,139 @@ jobs:
         id: uboot
         if: ${{ steps.compile.outputs.status == 'success' }}
         run: |
-          set -ex
           cd ${{ github.workspace }}
 
           # 安装依赖
-          sudo apt-get -y install python3-pyelftools python3-setuptools bison flex
+          sudo apt-get -y install gcc-aarch64-linux-gnu python3-pyelftools python3-setuptools bison flex swig libssl-dev
 
-          # 找到 OpenWrt 工具链路径
+          # 找到 OpenWrt 工具链路径（用于 U-Boot 编译）
           TC_DIR=$(cd openwrt/staging_dir/toolchain-* 2>/dev/null && pwd | head -1)
           TC_PREFIX=$(find "${TC_DIR}/bin" -name "aarch64-openwrt-linux-*gcc" | head -1 | sed 's/gcc$//')
-          echo "Toolchain: ${TC_DIR}"
-          echo "Prefix: ${TC_PREFIX}"
+          echo "Toolchain dir: ${TC_DIR}"
+          echo "Toolchain prefix: ${TC_PREFIX}"
+          echo "GCC test: $(${TC_PREFIX}gcc --version 2>&1 | head -1)"
 
           # 找到 staging_dir image 目录
           STAGING_IMG=$(cd openwrt/staging_dir/target-* 2>/dev/null && pwd | head -1)/image
           mkdir -p "${STAGING_IMG}"
           echo "Staging image dir: ${STAGING_IMG}"
 
+          # ============================================
           # 1. 构建 ARM Trusted Firmware (bl31.bin)
-          # 安装系统交叉编译器用于 ATF 编译（ATF 需要完整的 aarch64 gcc）
-          sudo apt-get -y install gcc-aarch64-linux-gnu
+          # ============================================
+          echo "=== Building ATF ==="
           git clone --depth=1 -b v2.10.0 https://github.com/ARM-software/arm-trusted-firmware.git atf || \
           git clone --depth=1 https://github.com/ARM-software/arm-trusted-firmware.git atf
           cd atf
-          make CROSS_COMPILE=aarch64-linux-gnu- PLAT=imx8mn bl31 -j$(nproc) || {
-            echo "Mainline ATF failed, trying NXP imx-atf..."
+
+          make CROSS_COMPILE=aarch64-linux-gnu- PLAT=imx8mn bl31 -j$(nproc) 2>&1 | tail -30
+          ATF_RET=${PIPESTATUS[0]}
+
+          if [[ ${ATF_RET} -ne 0 ]]; then
+            echo "Mainline ATF failed (exit ${ATF_RET}), trying NXP imx-atf..."
             cd ${{ github.workspace }}
             git clone --depth=1 https://github.com/nxp-imx/imx-atf.git atf-nxp
             cd atf-nxp
-            make CROSS_COMPILE=aarch64-linux-gnu- PLAT=imx8mn bl31 -j$(nproc)
-          }
-          find build -name bl31.bin -exec cp {} "${STAGING_IMG}/bl31_imx8mn.bin" \;
-          echo "bl31.bin: $(ls -la ${STAGING_IMG}/bl31_imx8mn.bin)"
+            make CROSS_COMPILE=aarch64-linux-gnu- PLAT=imx8mn bl31 -j$(nproc) 2>&1 | tail -30
+            ATF_RET=${PIPESTATUS[0]}
+          fi
 
-          # 2. 克隆 U-Boot 2024.10（有完整的 i.MX8MN flash.bin/binman 支持）
+          if [[ ${ATF_RET} -eq 0 ]]; then
+            BL31_PATH=$(find build -name bl31.bin | head -1)
+            if [[ -n "${BL31_PATH}" ]]; then
+              cp "${BL31_PATH}" "${STAGING_IMG}/bl31_imx8mn.bin"
+              echo "bl31.bin ready: $(ls -la ${STAGING_IMG}/bl31_imx8mn.bin)"
+            else
+              echo "ERROR: bl31.bin not found after successful build"
+              ATF_RET=1
+            fi
+          fi
+
+          if [[ ${ATF_RET} -ne 0 ]]; then
+            echo "ERROR: ATF build failed"
+            echo "status=failed" >> ${GITHUB_OUTPUT}
+            echo "reason=ATF build failed" >> ${GITHUB_OUTPUT}
+            exit 0
+          fi
+
+          # ============================================
+          # 2. 克隆 U-Boot 2024.10
+          # ============================================
+          echo "=== Cloning U-Boot ==="
           cd ${{ github.workspace }}
           git clone --depth=1 -b v2024.10 https://github.com/u-boot/u-boot.git u-boot-src || \
           git clone --depth=1 https://github.com/u-boot/u-boot.git u-boot-src
           cd u-boot-src
 
-          # 3. 关键修复：手动创建 asm 目录，解决符号链接问题
+          # 手动创建 asm 目录，解决符号链接问题
           mkdir -p arch/arm64/include/asm
 
-          # 4. 配置
-          make ARCH=arm64 CROSS_COMPILE="${TC_PREFIX}" imx8mn_evk_defconfig
+          # ============================================
+          # 3. 配置 U-Boot
+          # ============================================
+          echo "=== Configuring U-Boot ==="
+          make ARCH=arm64 CROSS_COMPILE="${TC_PREFIX}" imx8mn_evk_defconfig 2>&1
+          if [[ ! -f .config ]]; then
+            echo "ERROR: defconfig failed, .config not found"
+            echo "status=failed" >> ${GITHUB_OUTPUT}
+            echo "reason=U-Boot defconfig failed" >> ${GITHUB_OUTPUT}
+            exit 0
+          fi
+          echo "defconfig OK"
 
-          # 验证配置
-          ls -la .config
-
-          # 5. 检查 firmware-imx 是否已在 staging 目录（由 OpenWrt 编译安装）
-          # 注意：此时在 u-boot-src 目录下，需要用绝对路径
+          # ============================================
+          # 4. 准备 DDR 固件
+          # ============================================
+          echo "=== Preparing DDR firmware ==="
           FW_IMX_DIR=$(find "${{ github.workspace }}/openwrt/staging_dir" -type d -name "firmware-imx" 2>/dev/null | head -1 || echo "")
           if [[ -z "${FW_IMX_DIR}" ]]; then
             echo "firmware-imx not found in staging, downloading manually..."
-            # 下载 DDR PHY 固件（i.MX8MN 使用 LPDDR4）
             for fw in lpddr4_pmu_train_1d_imem lpddr4_pmu_train_1d_dmem \
                        lpddr4_pmu_train_2d_imem lpddr4_pmu_train_2d_dmem; do
               wget -q -O "${fw}.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/${fw}.bin" 2>/dev/null || \
               wget -q -O "${fw}.bin" "https://github.com/nxp-imx/imx-firmware/raw/lf-6.6.3_1.0.0/firmware/${fw}.bin" 2>/dev/null || true
             done
-            ls -la *.bin 2>/dev/null
           else
             echo "firmware-imx found at: ${FW_IMX_DIR}"
-            # 复制固件到当前目录（binman 会从当前目录查找）
             cp "${FW_IMX_DIR}"/*.bin . 2>/dev/null || true
-            ls -la *.bin 2>/dev/null
           fi
+          ls -la *.bin 2>/dev/null || echo "WARNING: No firmware .bin files found"
 
-          # 6. 编译 flash.bin
+          # ============================================
+          # 5. 编译 flash.bin
+          # ============================================
+          echo "=== Building U-Boot flash.bin ==="
           make ARCH=arm64 CROSS_COMPILE="${TC_PREFIX}" \
                BL31="${STAGING_IMG}/bl31_imx8mn.bin" \
-               -j$(nproc) flash.bin 2>&1 | tail -80
+               -j$(nproc) flash.bin 2>&1 | tail -100
+          UBOOT_RET=${PIPESTATUS[0]}
 
-          # 7. 验证
+          if [[ ${UBOOT_RET} -ne 0 ]]; then
+            echo "ERROR: U-Boot build failed (exit ${UBOOT_RET})"
+            echo "--- Last 200 lines of build log ---"
+            make ARCH=arm64 CROSS_COMPILE="${TC_PREFIX}" \
+                 BL31="${STAGING_IMG}/bl31_imx8mn.bin" \
+                 flash.bin 2>&1 | tail -200
+            echo "status=failed" >> ${GITHUB_OUTPUT}
+            echo "reason=U-Boot build failed (exit ${UBOOT_RET})" >> ${GITHUB_OUTPUT}
+            exit 0
+          fi
+
+          # ============================================
+          # 6. 验证输出
+          # ============================================
           if [[ -f flash.bin ]]; then
+            echo "SUCCESS: flash.bin built!"
             echo "flash.bin size: $(du -h flash.bin | cut -f1)"
             mkdir -p ${{ github.workspace }}/openwrt/output
             cp flash.bin ${{ github.workspace }}/openwrt/output/u-boot-imx8mn-evk_flash.bin
             echo "status=success" >> ${GITHUB_OUTPUT}
           else
-            echo "ERROR: flash.bin not found"
-            echo "Build artifacts:"
-            find . -name "flash.bin" -o -name "u-boot*" -o -name "*.bin" 2>/dev/null | head -20
+            echo "ERROR: flash.bin not found after successful build"
+            echo "Build artifacts in current dir:"
+            find . -maxdepth 2 -name "*.bin" -o -name "flash*" 2>/dev/null
             echo "status=failed" >> ${GITHUB_OUTPUT}
+            echo "reason=flash.bin not generated" >> ${GITHUB_OUTPUT}
           fi
 
       - name: Prepare release artifacts
@@ -499,15 +563,13 @@ jobs:
           name: OpenWrt for i.MX8MN EVK
           files: |
             openwrt/output/*
-            openwrt/output/uuu_emmc_flash.auto
-            openwrt/output/uuu_emmc_flash.sh
           overwrite_files: true
           make_latest: true
           token: ${{ secrets.GITHUB_TOKEN }}
           body: |
             ### i.MX8MN EVK OpenWrt Image
             - Target: `imx/cortexa53`
-            - Profile: `imx8m` (includes `imx8mn-evk.dts`)
+            - Device: `nxp_imx8mn-evk` (based on `imx8mn-evk.dts`)
             - Version: `${{ env.OW_VERSION }}`
             - Default IP: `${{ inputs.openwrt_ip }}`
             - Default username: `root`
