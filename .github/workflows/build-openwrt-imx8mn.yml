@@ -300,15 +300,19 @@ jobs:
           echo "Staging image dir: ${STAGING_IMG}"
 
           # 1. 构建 ARM Trusted Firmware (bl31.bin)
+          # 使用 OpenWrt 工具链（aarch64-openwrt-linux-musl-），不依赖系统 gcc-aarch64-linux-gnu
           git clone --depth=1 -b v2.10.0 https://github.com/ARM-software/arm-trusted-firmware.git atf || \
           git clone --depth=1 https://github.com/ARM-software/arm-trusted-firmware.git atf
           cd atf
-          make CROSS_COMPILE=aarch64-linux-gnu- PLAT=imx8mn bl31 -j$(nproc) || {
+          # 确保工具链路径在 PATH 中
+          export PATH="${TC_DIR}/bin:${PATH}"
+          make CROSS_COMPILE="${TC_PREFIX}" PLAT=imx8mn bl31 -j$(nproc) || {
             echo "Mainline ATF failed, trying NXP imx-atf..."
             cd ${{ github.workspace }}
             git clone --depth=1 https://github.com/nxp-imx/imx-atf.git atf-nxp
             cd atf-nxp
-            make CROSS_COMPILE=aarch64-linux-gnu- PLAT=imx8mn bl31 -j$(nproc)
+            export PATH="${TC_DIR}/bin:${PATH}"
+            make CROSS_COMPILE="${TC_PREFIX}" PLAT=imx8mn bl31 -j$(nproc)
           }
           find build -name bl31.bin -exec cp {} "${STAGING_IMG}/bl31_imx8mn.bin" \;
           echo "bl31.bin: $(ls -la ${STAGING_IMG}/bl31_imx8mn.bin)"
