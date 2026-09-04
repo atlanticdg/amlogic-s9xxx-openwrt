@@ -501,9 +501,9 @@ jobs:
             openwrt/output/*
             openwrt/output/uuu_emmc_flash.auto
             openwrt/output/uuu_emmc_flash.sh
-          allow_updates: true
+          overwrite_files: true
           make_latest: true
-          gh_token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           body: |
             ### i.MX8MN EVK OpenWrt Image
             - Target: `imx/cortexa53`
