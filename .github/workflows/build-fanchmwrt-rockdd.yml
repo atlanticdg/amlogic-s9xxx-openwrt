@@ -1,7 +1,8 @@
 #============================================================================================
-# Build FanchmWrt for rockdd (RK3399) from source
-# 源码: https://github.com/fanchmwrt/fanchmwrt
-# 使用 ophub 打包框架生成 rockdd 刷机包
+# Build FanchmWrt for rockdd — 源码编译 + 替换可用 U-Boot
+#
+# 可用 U-Boot 来源：fanchmwrt 官方 rock-pi-4a 镜像（download.ttcoder.cn）
+# 该镜像在 rockdd 上能启动，提取其 U-Boot 替换到我们编译的镜像中
 #============================================================================================
 
 name: Build FanchmWrt for rockdd
@@ -18,79 +19,21 @@ on:
           - "fanchmwrt-25.12.4"
           - "fanchmwrt-25.12.2"
           - "fanchmwrt-24.10.4"
-      openwrt_kernel:
-        description: "内核版本"
-        required: false
-        default: "6.12.y_6.18.y"
-        type: choice
-        options:
-          - "5.10.y"
-          - "5.15.y"
-          - "6.1.y"
-          - "6.6.y"
-          - "6.12.y"
-          - "6.18.y"
-          - "6.12.y_6.18.y"
-      auto_kernel:
-        description: "自动使用最新内核"
-        required: false
-        default: true
-        type: boolean
-      kernel_repo:
-        description: "内核仓库"
-        required: false
-        default: "atlanticdg/kernel"
-        type: choice
-        options:
-          - ophub/kernel
-          - atlanticdg/kernel
-      kernel_usage:
-        description: "内核 tag"
-        required: false
-        default: "stable"
-        type: choice
-        options:
-          - stable
-          - flippy
-          - beta
-      openclash:
-        description: "安装 OpenClash（fanchmwrt 源可能不含此插件）"
-        required: false
-        default: "no"
-        type: choice
-        options:
-          - "no"
-          - "yes"
-      openwrt_ip:
-        description: "路由器 LAN IP"
-        required: false
-        default: "192.168.1.1"
+      working_uboot_url:
+        description: "可用 rock-pi-4a 镜像的下载地址（提取 U-Boot 用）"
+        required: true
+        default: "https://download.ttcoder.cn/fanchmwrt/firmware/radxa/fanchmwrt25.12.4-1.0.3-rockchip-armv8-radxa_rock-pi-4a-expand-root-squashfs-sysupgrade.img.gz"
+        type: string
       root_password:
-        description: "root 密码（默认 password）"
+        description: "root 密码"
         required: false
         default: "password"
+        type: string
       use_ccache:
         description: "使用 ccache 加速"
         required: false
         default: true
         type: boolean
-      openwrt_storage:
-        description: "镜像存储类型"
-        required: false
-        default: "save"
-        type: choice
-        options:
-          - save
-          - temp
-      builder_name:
-        description: "编译者签名"
-        required: false
-        default: "ophub"
-        type: choice
-        options:
-          - ophub
-          - angel
-          - yourname
 
 permissions:
   contents: write
@@ -102,7 +45,6 @@ env:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    if: ${{ github.event.repository.owner.id == github.event.sender.id }}
 
     steps:
       - name: Checkout
@@ -110,28 +52,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolve config directory
-        id: resolve-config
-        run: |
-          # 尝试用 openwrt_main 的配置（fanchmwrt 基于 OpenWrt）
-          if [[ -d "config/openwrt_main" ]]; then
-            CONFIG_DIR="config/openwrt_main"
-          elif [[ -d "config/immortalwrt_master" ]]; then
-            CONFIG_DIR="config/immortalwrt_master"
-          else
-            echo "Error: No config directory found"
-            ls -la config/ || true
-            exit 1
-          fi
-          echo "CONFIG_DIR=${CONFIG_DIR}" >> ${GITHUB_ENV}
-          echo "FEEDS_CONF=${CONFIG_DIR}/feeds.conf.default" >> ${GITHUB_ENV}
-          echo "CONFIG_FILE=${CONFIG_DIR}/config" >> ${GITHUB_ENV}
-          echo "DIY_P1_SH=${CONFIG_DIR}/diy-part1.sh" >> ${GITHUB_ENV}
-          echo "DIY_P2_SH=${CONFIG_DIR}/diy-part2.sh" >> ${GITHUB_ENV}
-          echo "Using config dir: ${CONFIG_DIR}"
-
-      - name: Initialize the build environment
-        id: init
+      - name: Initialize build environment
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -152,10 +73,8 @@ jobs:
           sudo ntpdate ntp.ubuntu.com 0.pool.ntp.org || true
           sudo timedatectl set-ntp true
           date -u
-          echo "status=success" >> ${GITHUB_OUTPUT}
 
-      - name: Create virtual disk for extended storage
-        id: disk
+      - name: Create virtual disk
         run: |
           root_avail=$(df --block-size=1G / | tail -1 | awk '{print $4}')
           root_size=$(( root_avail - 4 ))
@@ -167,31 +86,16 @@ jobs:
           sudo mount "${build_dev}" /builder
           sudo chown -R runner:runner /builder
           df -Th
-          echo "status=success" >> ${GITHUB_OUTPUT}
 
       - name: Clone FanchmWrt source
-        id: codes
         working-directory: /builder
-        if: ${{ steps.init.outputs.status == 'success' && !cancelled() }}
         run: |
           FW_BRANCH="${{ inputs.fanchmwrt_branch }}"
-          REPO_URL="https://github.com/fanchmwrt/fanchmwrt"
-          git clone -q --single-branch --depth=1 --branch="${FW_BRANCH}" ${REPO_URL} openwrt
+          git clone -q --single-branch --depth=1 --branch="${FW_BRANCH}" \
+              https://github.com/fanchmwrt/fanchmwrt.git openwrt
           ln -sf /builder/openwrt ${{ github.workspace }}/openwrt
-          echo "build_tag=FanchmWrt_rockdd_${FW_BRANCH}_$(date +"%Y.%m")" >> ${GITHUB_ENV}
-          echo -e "REPO_URL: [ ${REPO_URL} ]\nBranch: [ ${FW_BRANCH} ]"
-          df -hT ${PWD}
-          echo "REPO_URL=${REPO_URL}" >> ${GITHUB_ENV}
-          echo "REPO_NAME=fanchmwrt" >> ${GITHUB_ENV}
-          echo "REPO_BRANCH=${FW_BRANCH}" >> ${GITHUB_ENV}
-          echo "status=success" >> ${GITHUB_OUTPUT}
-
-      - name: Load custom feeds
-        run: |
-          [[ -f "${FEEDS_CONF}" ]] && cp -f ${FEEDS_CONF} openwrt/feeds.conf.default
-          [[ -f "${DIY_P1_SH}" ]] && chmod +x ${DIY_P1_SH}
-          cd openwrt/
-          [[ -f "${{ github.workspace }}/${DIY_P1_SH}" ]] && ${{ github.workspace }}/${DIY_P1_SH}
+          echo "build_tag=FanchmWrt_rockdd_${FW_BRANCH}_$(date +%Y.%m.%d)" >> ${GITHUB_ENV}
+          echo "Source: ${FW_BRANCH}"
 
       - name: Update feeds
         run: cd openwrt/ && ./scripts/feeds update -a
@@ -199,41 +103,58 @@ jobs:
       - name: Install feeds
         run: cd openwrt/ && ./scripts/feeds install -a
 
-      - name: Load custom configuration
-        run: |
-          [[ -d "files" ]] && mv -f files openwrt/files
-          [[ -e "${CONFIG_FILE}" ]] && cp -f ${CONFIG_FILE} openwrt/.config
-          [[ -f "${DIY_P2_SH}" ]] && chmod +x ${DIY_P2_SH}
-          cd openwrt/
-          [[ -f "${{ github.workspace }}/${DIY_P2_SH}" ]] && ${{ github.workspace }}/${DIY_P2_SH} "${{ inputs.openwrt_ip }}" "${{ inputs.use_ccache }}"
-
-      # ============================================
-      # 自定义：应用额外包配置
-      # ============================================
-      - name: Apply custom packages
+      - name: Customize (root password, hostname)
         run: |
           cd openwrt/
-          OPENCLASH_INPUT="${{ inputs.openclash }}"
+          mkdir -p files/etc/uci-defaults
+          cat > files/etc/uci-defaults/99-custom << 'EOF'
+          #!/bin/sh
+          echo "root:__ROOT_PW__" | chpasswd
+          uci set system.@system[0].hostname='fanchmwrt-rockdd'
+          uci commit system
+          exit 0
+          EOF
+          chmod +x files/etc/uci-defaults/99-custom
+          sed -i "s/__ROOT_PW__/${{ inputs.root_password }}/g" files/etc/uci-defaults/99-custom
 
-          # OpenClash（fanchmwrt 源可能不含，按需添加）
-          if [[ "${OPENCLASH_INPUT}" == "yes" ]]; then
-            echo "Enabling OpenClash..."
-            # 尝试启用，如果 feed 不存在会在 defconfig 时被忽略
-            echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
-          fi
+      - name: Configure build
+        run: |
+          cd openwrt/
+          cat > .config << 'EOF'
+          CONFIG_TARGET_rockchip=y
+          CONFIG_TARGET_rockchip_armv8=y
+          CONFIG_TARGET_MULTI_PROFILE=y
+          CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_radxa_rock-pi-4a=y
+          CONFIG_TARGET_ROOTFS_PARTSIZE=1024
+          CONFIG_TARGET_KERNEL_PARTSIZE=32
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+          CONFIG_PACKAGE_luci-theme-material=y
+          CONFIG_PACKAGE_luci-app-firewall=y
+          CONFIG_PACKAGE_luci-app-opkg=y
+          CONFIG_PACKAGE_luci-app-upnp=y
+          CONFIG_PACKAGE_luci-app-ddns=y
+          CONFIG_PACKAGE_luci-app-wol=y
+          CONFIG_PACKAGE_luci-app-nlbwmon=y
+          CONFIG_PACKAGE_kmod-rtw88-8822be=m
+          CONFIG_PACKAGE_rtl8822be-firmware=y
+          CONFIG_PACKAGE_wpad-mesh-openssl=y
+          CONFIG_PACKAGE_wpa-cli=y
+          CONFIG_PACKAGE_openssh-sftp-server=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_wget-ssl=y
+          CONFIG_PACKAGE_htop=y
+          CONFIG_PACKAGE_nano=y
+          CONFIG_PACKAGE_usbutils=y
+          CONFIG_PACKAGE_pciutils=y
+          CONFIG_PACKAGE_block-mount=y
+          CONFIG_PACKAGE_kmod-fs-ext4=y
+          CONFIG_PACKAGE_kmod-fs-vfat=y
+          CONFIG_PACKAGE_kmod-fs-ntfs3=y
+          EOF
+          echo "Device: $(grep CONFIG_TARGET_DEVICE .config)"
 
-          # RTL8822BE WiFi 驱动
-          echo "Enabling RTL8822BE driver..."
-          echo "CONFIG_PACKAGE_kmod-rtw88-8822be=y" >> .config
-
-          # wpad（支持 5GHz AC 模式）
-          echo "CONFIG_PACKAGE_wpad-mesh-openssl=y" >> .config
-          echo "CONFIG_PACKAGE_wpa-cli=y" >> .config
-
-          echo "=== Custom packages applied ==="
-
-      - name: Download package
-        id: package
+      - name: Download package sources
         run: |
           cd openwrt/
           make defconfig
@@ -241,98 +162,191 @@ jobs:
           find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
 
-      - name: Get FanchmWrt source commit hash
-        id: openwrthash
+      - name: Get source commit hash
+        id: srchash
         run: |
-          api_url="https://api.github.com/repos/fanchmwrt/fanchmwrt/git/ref/heads/${{ env.REPO_BRANCH }}"
+          api_url="https://api.github.com/repos/fanchmwrt/fanchmwrt/git/ref/heads/${{ inputs.fanchmwrt_branch }}"
           source_hash=$(curl -fsSL -m 20 \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              ${api_url} |
-              jq -r '.object.sha')
+              ${api_url} | jq -r '.object.sha')
           [[ -z "${source_hash}" || "${source_hash}" == "null" ]] && source_hash="${{ github.sha }}"
           echo "source_hash=${source_hash}" >> ${GITHUB_ENV}
-          echo "status=success" >> ${GITHUB_OUTPUT}
 
       - name: Cache ccache
         uses: actions/cache@v5
         with:
           path: /builder/openwrt/.ccache
-          key: openwrt-fanchmwrt-${{ env.source_hash }}
-          restore-keys: |
-            openwrt-fanchmwrt-
+          key: fanchmwrt-rockdd-${{ env.source_hash }}
+          restore-keys:
+            fanchmwrt-rockdd-
 
-      - name: Compile the FanchmWrt firmware
+      - name: Compile FanchmWrt
         id: compile
         run: |
           cd openwrt/
-          echo -e "Compiling with $(nproc) threads"
-          make -j$(($(nproc) + 1)) V=s || make -j1 || make -j1 V=s
+          echo "Compiling with $(nproc) threads..."
+          make -j$(($(nproc) + 1)) V=s 2>&1 | tail -50
+          RET=${PIPESTATUS[0]}
+          if [[ ${RET} -ne 0 ]]; then
+            echo "Retrying with -j1 V=s..."
+            make -j1 V=s 2>&1 | tail -200
+            RET=${PIPESTATUS[0]}
+          fi
+          [[ ${RET} -eq 0 ]] && echo "status=success" >> ${GITHUB_OUTPUT} || {
+            echo "status=failed" >> ${GITHUB_OUTPUT}; exit 1; }
+          ccache -s 2>/dev/null || true
 
-          echo -e "ccache statistics:"
-          ccache -s 2>/dev/null
-          echo -e "ccache directory size:"
-          du -sh $(pwd)/.ccache 2>/dev/null || echo "No ccache directory found."
-
-          echo "status=success" >> ${GITHUB_OUTPUT}
-
-      - name: Clean up build files and reclaim disk space
-        id: clean
-        if: ${{ steps.compile.outputs.status == 'success' && !cancelled() }}
+      # ============================================
+      # 下载可用镜像 → 提取 U-Boot → 替换
+      # ============================================
+      - name: Replace U-Boot with working version
+        if: ${{ steps.compile.outputs.status == 'success' }}
         run: |
           cd openwrt/
-          [[ -d "output" ]] || mkdir output
-          ls -alh bin/targets/*/*/* || true
-          cp -f bin/targets/*/*/*-generic-rootfs.tar.gz output/
+
+          echo "=== Generated files ==="
+          ls -lah bin/targets/rockchip/armv8/
+
+          # 找到我们编译的镜像
+          IMG_GZ=$(ls bin/targets/rockchip/armv8/*rock-pi-4a*.img.gz 2>/dev/null | head -1)
+          if [[ -z "${IMG_GZ}" ]]; then
+            echo "ERROR: No .img.gz found!"
+            exit 1
+          fi
+          echo "New image: ${IMG_GZ}"
+          gunzip -k "${IMG_GZ}"
+          IMG="${IMG_GZ%.gz}"
+
+          # ============================================
+          # 下载官方可用镜像
+          # ============================================
+          WORKING_URL="${{ inputs.working_uboot_url }}"
+          echo "=== Downloading working image ==="
+          echo "URL: ${WORKING_URL}"
+          curl -sL -o /tmp/working.img.gz "${WORKING_URL}"
+          SIZE=$(du -h /tmp/working.img.gz | cut -f1)
+          echo "Downloaded: ${SIZE}"
+
+          if [[ "${SIZE}" == "0" || "${SIZE}" == "" ]]; then
+            echo "ERROR: Download failed or file is empty"
+            exit 1
+          fi
+
+          # 解压
+          gunzip -k /tmp/working.img.gz
+          WORKING_IMG=/tmp/working.img
+
+          if [[ ! -f "${WORKING_IMG}" ]]; then
+            echo "ERROR: Could not extract working image"
+            exit 1
+          fi
+
+          echo "Working image size: $(du -h ${WORKING_IMG} | cut -f1)"
+
+          # 检查可用镜像的分区信息
+          echo "=== Working image partition info ==="
+          fdisk -l "${WORKING_IMG}" 2>/dev/null || true
+
+          # ============================================
+          # 提取 U-Boot
+          # RK3399 标准布局：
+          #   扇区 64 (32KB): idbloader.img (SPL + TPL + DDR init)
+          #   扇区 16384 (8MB): u-boot.itb (U-Boot proper + ATF + DTB)
+          # ============================================
+          echo "=== Extracting U-Boot from working image ==="
+
+          # 提取 idbloader（2MB 足够）
+          dd if="${WORKING_IMG}" of=/tmp/idbloader.img bs=512 skip=64 count=4096 2>/dev/null
+          echo "idbloader.img: $(du -h /tmp/idbloader.img | cut -f1)"
+
+          # 提取 u-boot.itb（4MB 足够）
+          dd if="${WORKING_IMG}" of=/tmp/u-boot.itb bs=512 skip=16384 count=8192 2>/dev/null
+          echo "u-boot.itb: $(du -h /tmp/u-boot.itb | cut -f1)"
+
+          # 验证提取的文件是否有效
+          echo "=== Verifying U-Boot files ==="
+          file /tmp/idbloader.img 2>/dev/null || true
+          file /tmp/u-boot.itb 2>/dev/null || true
+
+          # 检查 idbloader 的头部标识（RK3399 应该有特定的 magic）
+          echo "idbloader first bytes:"
+          xxd -l 64 /tmp/idbloader.img 2>/dev/null | head -4 || true
+
+          echo "u-boot.itb first bytes:"
+          xxd -l 64 /tmp/u-boot.itb 2>/dev/null | head -4 || true
+
+          # ============================================
+          # 替换到我们编译的镜像
+          # ============================================
+          echo "=== Replacing U-Boot in new image ==="
+          dd if=/tmp/idbloader.img of="${IMG}" bs=512 seek=64 conv=notrunc 2>/dev/null
+          echo "idbloader replaced"
+          dd if=/tmp/u-boot.itb of="${IMG}" bs=512 seek=16384 conv=notrunc 2>/dev/null
+          echo "u-boot.itb replaced"
+
+          # ============================================
+          # 检查 boot 分区内容
+          # ============================================
+          echo "=== New image partition info ==="
+          fdisk -l "${IMG}" 2>/dev/null || true
+
+          BOOT_INFO=$(parted "${IMG}" unit B print 2>/dev/null || true)
+          BOOT_START=$(echo "${BOOT_INFO}" | grep "^ 1 " | awk '{print $2}' | tr -d 'B')
+          if [[ -n "${BOOT_START}" ]]; then
+            mkdir -p /tmp/bootmnt
+            sudo mount -o loop,offset=${BOOT_START} "${IMG}" /tmp/bootmnt 2>/dev/null && {
+              echo "Boot partition files:"
+              ls -la /tmp/bootmnt/
+              sudo umount /tmp/bootmnt
+            } || echo "Could not mount boot partition"
+          fi
+
+          # 重新压缩
+          gzip -k -f "${IMG}"
+
+          # 输出
+          mkdir -p output
+          cp -f "${IMG}.gz" output/rockdd_fanchmwrt-${{ inputs.fanchmwrt_branch }}_$(date +%Y.%m.%d).img.gz
+
+          echo "=== Final output ==="
+          ls -lah output/
+
+      - name: Organize output
+        if: ${{ steps.compile.outputs.status == 'success' }}
+        run: |
+          cd openwrt/
+          mkdir -p output
+          cp -f bin/targets/rockchip/armv8/*.manifest output/ 2>/dev/null || true
           cp -f .config output/config
-          ls -A | grep -vE '^(output|\.ccache)$' | xargs rm -rf || true
-          df -hT ${PWD}
-          echo "status=success" >> ${GITHUB_OUTPUT}
+          ls -lah output/
 
-      - name: Upload FanchmWrt rootfs to Release
-        uses: ophub/upload-to-releases@main
-        if: ${{ steps.clean.outputs.status == 'success' && !cancelled() }}
+      - name: Upload to Release
+        if: ${{ steps.compile.outputs.status == 'success' }}
+        uses: softprops/action-gh-release@v3
         with:
-          tag: ${{ env.build_tag }}
-          artifacts: openwrt/output/*
-          allow_updates: true
-          remove_artifacts: false
-          replaces_artifacts: true
+          tag_name: ${{ env.build_tag }}
+          name: FanchmWrt for rockdd
+          files: |
+            openwrt/output/*
+          overwrite_files: true
           make_latest: true
-          gh_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Package FanchmWrt for rockdd board
-        if: ${{ steps.clean.outputs.status == 'success' && !cancelled() }}
-        uses: ./
-        with:
-          openwrt_path: openwrt/output/*rootfs.tar.gz
-          openwrt_ip: ${{ inputs.openwrt_ip }}
-          openwrt_board: rockdd
-          openwrt_kernel: ${{ inputs.openwrt_kernel }}
-          auto_kernel: ${{ inputs.auto_kernel }}
-          kernel_repo: ${{ inputs.kernel_repo }}
-          kernel_usage: ${{ inputs.kernel_usage }}
-          builder_name: ${{ inputs.builder_name }}
-
-      - name: Upload packaged FanchmWrt to Release
-        uses: ophub/upload-to-releases@main
-        if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}
-        with:
-          tag: ${{ env.build_tag }}
-          artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*
-          allow_updates: true
-          remove_artifacts: false
-          replaces_artifacts: true
-          make_latest: true
-          gh_token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           body: |
             ### FanchmWrt for rockdd (RK3399)
-            - Source: [fanchmwrt](${{ env.REPO_URL }}/tree/${{ env.REPO_BRANCH }})
-            - Board: `rockdd` (RK3399, LPDDR4 4GB, PCIe WiFi RTL8822BE)
-            - Default IP: `${{ inputs.openwrt_ip }}`
+            - Source: [fanchmwrt](https://github.com/fanchmwrt/fanchmwrt/tree/${{ inputs.fanchmwrt_branch }})
+            - Base device: `radxa_rock-pi-4a`
+            - U-Boot: Replaced from working image (download.ttcoder.cn)
+            - Default IP: `192.168.1.1`
             - Default username: `root`
             - Default password: `${{ inputs.root_password }}`
-            ### Install to EMMC
-            - Login to OpenWrt → `System` → `Amlogic Service` → `Install OpenWrt`
-            ### Applicable Platform
-            - `arm64`
+
+            ### 烧录方法
+            1. 解压 `.img.gz` 得到 `.img`
+            2. 使用 RKDevTool（Windows）通过 MaskROM 模式烧录
+
+            ### 说明
+            - 内核 + rootfs 来自 FanchmWrt 源码完整编译
+            - U-Boot 从 FanchmWrt 官方 rock-pi-4a 镜像提取替换（解决启动问题）
+            - DTB 目前用 rock-pi-4a 的，WiFi 可能需要手动配置
+            - 后续可添加 rockdd 专属 DTB 支持 PCIe WiFi
