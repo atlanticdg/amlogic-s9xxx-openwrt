@@ -215,8 +215,15 @@ jobs:
             exit 1
           fi
           echo "New image: ${IMG_GZ}"
-          gunzip -k "${IMG_GZ}"
+          # OpenWrt 的 .img.gz 可能有 trailing garbage，gunzip 会返回非零退出码
+          # 但文件实际已成功解压，用 || true 忽略退出码，再验证文件是否存在
+          gunzip -k -f "${IMG_GZ}" 2>/dev/null || true
           IMG="${IMG_GZ%.gz}"
+          if [[ ! -f "${IMG}" ]]; then
+            echo "ERROR: Decompression failed!"
+            exit 1
+          fi
+          echo "Decompressed: ${IMG} ($(du -h "${IMG}" | cut -f1))"
 
           # ============================================
           # 下载官方可用镜像
@@ -233,8 +240,8 @@ jobs:
             exit 1
           fi
 
-          # 解压
-          gunzip -k /tmp/working.img.gz
+          # 解压（同样可能有 trailing garbage）
+          gunzip -k -f /tmp/working.img.gz 2>/dev/null || true
           WORKING_IMG=/tmp/working.img
 
           if [[ ! -f "${WORKING_IMG}" ]]; then
