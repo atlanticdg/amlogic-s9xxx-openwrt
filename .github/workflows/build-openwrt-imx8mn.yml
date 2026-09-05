@@ -1,38 +1,37 @@
 #============================================================================================
-# Build OpenWrt for i.MX8MN EVK from source
-# OpenWrt 内置 imx/cortexa53 target，imx8m profile 自带 imx8mn-evk.dts
-# 需要补丁 cortexa53.mk 为 imx8m 添加 SD 卡镜像生成
+# Build OpenWrt for i.MX8MN Mozart 2
+# Repository: atlanticdg/amlogic-s9xxx-openwrt
+# Source: OpenWrt / ImmortalWrt
 #============================================================================================
 
-name: Build OpenWrt for i.MX8MN
+name: Build OpenWrt for i.MX8MN Mozart 2
 
 on:
   workflow_dispatch:
     inputs:
-      openwrt_version:
-        description: "OpenWrt 版本"
+      source_repo:
+        description: "OpenWrt 源码仓库"
         required: true
-        default: "v25.12.5"
+        default: "https://github.com/openwrt/openwrt.git"
         type: choice
         options:
-          - "v25.12.5"
-          - "v25.12.0"
+          - "https://github.com/openwrt/openwrt.git"
+          - "https://github.com/immortalwrt/immortalwrt.git"
+      source_branch:
+        description: "源码分支"
+        required: true
+        default: "openwrt-24.10"
+        type: choice
+        options:
+          - "openwrt-24.10"
+          - "openwrt-23.05"
           - "main"
-      openwrt_ip:
-        description: "路由器 LAN IP"
-        required: false
-        default: "192.168.1.1"
-        type: string
+          - "master"
       root_password:
-        description: "root 密码 (默认 password)"
+        description: "root 密码"
         required: false
         default: "password"
         type: string
-      include_openclash:
-        description: "安装 OpenClash"
-        required: false
-        default: false
-        type: boolean
       use_ccache:
         description: "使用 ccache 加速"
         required: false
@@ -50,11 +49,18 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      # ============================================
+      # 1. 检出当前仓库（获取 DTS 等自定义文件）
+      # ============================================
+      - name: Checkout custom repo
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          path: custom-repo
 
+      # ============================================
+      # 2. 初始化编译环境
+      # ============================================
       - name: Initialize build environment
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -77,6 +83,9 @@ jobs:
           sudo timedatectl set-ntp true
           date -u
 
+      # ============================================
+      # 3. 创建虚拟磁盘（解决空间不足）
+      # ============================================
       - name: Create virtual disk
         run: |
           root_avail=$(df --block-size=1G / | tail -1 | awk '{print $4}')
@@ -90,525 +99,367 @@ jobs:
           sudo chown -R runner:runner /builder
           df -Th
 
+      # ============================================
+      # 4. 克隆 OpenWrt 源码
+      # ============================================
       - name: Clone OpenWrt source
         working-directory: /builder
         run: |
-          OW_VERSION="${{ inputs.openwrt_version }}"
-          if [[ "${OW_VERSION}" == "main" ]]; then
-            git clone --depth=1 https://github.com/openwrt/openwrt.git openwrt
-          else
-            git clone --depth=1 --branch="${OW_VERSION}" https://github.com/openwrt/openwrt.git openwrt
-          fi
+          REPO="${{ inputs.source_repo }}"
+          BRANCH="${{ inputs.source_branch }}"
+          echo "Cloning ${REPO} (${BRANCH})..."
+          git clone -q --single-branch --depth=1 --branch="${BRANCH}" "${REPO}" openwrt
           ln -sf /builder/openwrt ${{ github.workspace }}/openwrt
-          echo "build_tag=OpenWrt_imx8mn_${OW_VERSION}_$(date +%Y.%m.%d)" >> ${GITHUB_ENV}
-          echo "OW_VERSION=${OW_VERSION}" >> ${GITHUB_ENV}
-          df -hT
-
-      - name: Update and install feeds
-        run: |
-          cd openwrt/
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          echo "build_tag=mozart2_${BRANCH}_$(date +%Y%m%d)" >> ${GITHUB_ENV}
+          echo "Source: ${REPO} @ ${BRANCH}"
 
       # ============================================
-      # 关键步骤：新增 nxp_imx8mn-evk device 支持 SD 卡镜像生成
-      # 原生 imx8m device 没有 IMAGES 定义，只生成 tar.gz
-      # 参考 gateworks_venice 的实现方式，新增独立 device
+      # 5. 注入 Mozart 2 设备支持（关键步骤）
       # ============================================
-      - name: Add nxp_imx8mn-evk device with SD card image
+      - name: Inject Mozart 2 device support
         run: |
           cd openwrt/
-          MK_FILE="target/linux/imx/image/cortexa53.mk"
+          CUSTOM_DIR="${{ github.workspace }}/custom-repo"
 
-          # 1. 创建 boot script（U-Boot 启动脚本）
-          cat > target/linux/imx/image/bootscript-nxp_imx8mn-evk << 'BOOTSCR'
-          echo "Booting OpenWrt from MMC..."
-          setexpr rootpath /dev/mmcblk${bootdev}p${distro_bootpart}
-          setenv bootargs console=ttymxc1,115200n8 root=${rootpath} rootwait rw
-          if test -e ${devtype} ${devnum}:${distro_bootpart} /${fdtfile}; then
-            load ${devtype} ${devnum}:${distro_bootpart} ${fdt_addr_r} ${fdtfile}
+          # --- 5.1 查找并复制 DTS 文件 ---
+          DTS_FILE=""
+          for d in "${CUSTOM_DIR}/dts" "${CUSTOM_DIR}"; do
+            if [[ -f "${d}/imx8mn-mozart2.dts" ]]; then
+              DTS_FILE="${d}/imx8mn-mozart2.dts"
+              break
+            fi
+          done
+
+          if [[ -z "${DTS_FILE}" ]]; then
+            echo "ERROR: imx8mn-mozart2.dts not found in repository!"
+            echo "Please place it at: repo-root/imx8mn-mozart2.dts or repo-root/dts/imx8mn-mozart2.dts"
+            exit 1
           fi
-          load ${devtype} ${devnum}:${distro_bootpart} ${kernel_addr_r} /Image
-          booti ${kernel_addr_r} - ${fdt_addr_r}
-          BOOTSCR
+          echo "Found DTS: ${DTS_FILE}"
 
-          echo "=== Boot script created ==="
-          cat target/linux/imx/image/bootscript-nxp_imx8mn-evk
+          # --- 5.2 复制到 OpenWrt 内核文件注入目录 ---
+          DTS_TARGET="target/linux/imx/files/arch/arm64/boot/dts/freescale"
+          mkdir -p "${DTS_TARGET}"
+          cp -v "${DTS_FILE}" "${DTS_TARGET}/imx8mn-mozart2.dts"
 
-          # 2. 在 cortexa53.mk 末尾追加新的 device 定义
-          cat >> "${MK_FILE}" << 'PATCHEOF'
+          # --- 5.3 在 cortexa53.mk 中注册设备 ---
+          MK_FILE="target/linux/imx/image/cortexa53.mk"
+          if ! grep -q "imx8mn-mozart2" "${MK_FILE}"; then
+            echo "" >> "${MK_FILE}"
+            cat >> "${MK_FILE}" << 'EOF'
 
-          # ===== Added: nxp_imx8mn-evk with SD card image =====
-          define Device/nxp_imx8mn-evk
-            $(call Device/Default)
-            DEVICE_VENDOR := NXP
-            DEVICE_MODEL := i.MX8M Nano EVK
-            SOC := imx8mn
-            SUPPORTED_DEVICES := fsl,imx8mn-evk nxp,imx8mn-evk
-            DEVICE_DTS := imx8mn-evk
-            BOOT_SCRIPT := nxp_imx8mn-evk
-            FILESYSTEMS := squashfs ext4
-            PARTITION_OFFSET := 16M
-            DEVICE_PACKAGES := \
-              kmod-usb-dwc3 \
-              kmod-usb-dwc3-imx \
-              kmod-thermal-imx8m \
-              kmod-fec \
-              kmod-phy-realtek
-            IMAGES := img.gz
-            IMAGE/img.gz := boot-scr | boot-img-ext4 | sdcard-img-ext4 | gzip | append-metadata
-          endef
-          TARGET_DEVICES += nxp_imx8mn-evk
-          PATCHEOF
+define Device/imx8mn-mozart2
+  DEVICE_VENDOR := B&O
+  DEVICE_MODEL := Mozart 2 (i.MX8MN)
+  DEVICE_DTS := imx8mn-mozart2
+  DEVICE_PACKAGES := kmod-swconfig kmod-switch-rtl8366s kmod-switch-rtl8306 \
+    kmod-fs-ext4 kmod-fs-vfat kmod-fs-ntfs3 \
+    kmod-usb-core kmod-usb2 kmod-usb3 \
+    wpad-mesh-openssl
+endef
+TARGET_DEVICES += imx8mn-mozart2
+EOF
+            echo "Registered imx8mn-mozart2 device in ${MK_FILE}"
+          else
+            echo "Device imx8mn-mozart2 already registered"
+          fi
 
-          echo ""
-          echo "=== Added device definition ==="
-          tail -25 "${MK_FILE}"
+          # --- 5.4 验证注入 ---
+          echo "=== Injected files ==="
+          ls -la "${DTS_TARGET}/imx8mn-mozart2.dts"
+          echo "=== Device definitions (tail) ==="
+          tail -20 "${MK_FILE}"
 
-      - name: Configure build
+      # ============================================
+      # 6. 更新 Feeds
+      # ============================================
+      - name: Update feeds
+        run: cd openwrt/ && ./scripts/feeds update -a
+
+      - name: Install feeds
+        run: cd openwrt/ && ./scripts/feeds install -a
+
+      # ============================================
+      # 7. 生成编译配置（.config）
+      # ============================================
+      - name: Generate config
         run: |
           cd openwrt/
-
-          # 基础 target 配置
-          cat > .config << 'EOF'
+          cat > .config << EOF
+          # Target
           CONFIG_TARGET_imx=y
           CONFIG_TARGET_imx_cortexa53=y
-          CONFIG_TARGET_MULTI_PROFILE=y
-          CONFIG_TARGET_DEVICE_imx_cortexa53_DEVICE_nxp_imx8mn-evk=y
-          CONFIG_TARGET_ROOTFS_PARTSIZE=1024
-          CONFIG_TARGET_KERNEL_PARTSIZE=32
-          EOF
+          CONFIG_TARGET_DEVICE_imx_cortexa53_DEVICE_imx8mn-mozart2=y
 
-          # LuCI 和基础包
-          cat >> .config << 'EOF'
+          # Partition size
+          CONFIG_TARGET_ROOTFS_PARTSIZE=512
+          CONFIG_TARGET_KERNEL_PARTSIZE=32
+
+          # ccache
+          CONFIG_CCACHE=${{ inputs.use_ccache && 'y' || 'n' }}
+
+          # LuCI & apps
           CONFIG_PACKAGE_luci=y
           CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
           CONFIG_PACKAGE_luci-theme-material=y
           CONFIG_PACKAGE_luci-app-firewall=y
-          CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
+          CONFIG_PACKAGE_luci-app-opkg=y
           CONFIG_PACKAGE_luci-app-upnp=y
-          CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y
-          CONFIG_PACKAGE_luci-app-ttyd=y
-          CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
-          CONFIG_PACKAGE_luci-app-attendedsysupgrade=y
-          CONFIG_PACKAGE_luci-i18n-attendedsysupgrade-zh-cn=y
+          CONFIG_PACKAGE_luci-app-ddns=y
+          CONFIG_PACKAGE_luci-app-wol=y
+          CONFIG_PACKAGE_luci-app-nlbwmon=y
+
+          # Network & wireless
           CONFIG_PACKAGE_wpad-mesh-openssl=y
           CONFIG_PACKAGE_wpa-cli=y
-          CONFIG_PACKAGE_wireless-regdb=y
-          CONFIG_PACKAGE_iw=y
-          CONFIG_PACKAGE_pciutils=y
-          CONFIG_PACKAGE_usbutils=y
+
+          # Utilities
+          CONFIG_PACKAGE_openssh-sftp-server=y
           CONFIG_PACKAGE_curl=y
           CONFIG_PACKAGE_wget-ssl=y
-          CONFIG_PACKAGE_nano=y
           CONFIG_PACKAGE_htop=y
-          CONFIG_PACKAGE_bash=y
-          CONFIG_PACKAGE_ca-bundle=y
-          CONFIG_PACKAGE_iptables-nft=y
+          CONFIG_PACKAGE_nano=y
+          CONFIG_PACKAGE_usbutils=y
+          CONFIG_PACKAGE_pciutils=y
+          CONFIG_PACKAGE_block-mount=y
+
+          # Filesystem
+          CONFIG_PACKAGE_kmod-fs-ext4=y
+          CONFIG_PACKAGE_kmod-fs-vfat=y
+          CONFIG_PACKAGE_kmod-fs-ntfs3=y
+
+          # Switch
+          CONFIG_PACKAGE_kmod-switch-rtl8366s=y
+          CONFIG_PACKAGE_kmod-switch-rtl8306=y
+          CONFIG_PACKAGE_kmod-swconfig=y
+
+          # USB
+          CONFIG_PACKAGE_kmod-usb-core=y
+          CONFIG_PACKAGE_kmod-usb2=y
+          CONFIG_PACKAGE_kmod-usb3=y
           EOF
 
-          # OpenClash（可选）
-          if [[ "${{ inputs.include_openclash }}" == "true" ]]; then
-            echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
-          fi
-
-          # ccache
-          if [[ "${{ inputs.use_ccache }}" == "true" ]]; then
-            echo "CONFIG_DEVEL=y" >> .config
-            echo "CONFIG_CCACHE=y" >> .config
-            echo 'CONFIG_CCACHE_DIR="$(TOPDIR)/.ccache"' >> .config
-          fi
-
           make defconfig
+          echo "=== Target device check ==="
+          grep "CONFIG_TARGET_DEVICE" .config || true
 
-      - name: Apply custom settings
+      # ============================================
+      # 8. 自定义 root 密码和主机名
+      # ============================================
+      - name: Customize root password and hostname
         run: |
           cd openwrt/
-
-          # 设置 root 密码
-          PASSWORD="${{ inputs.root_password }}"
-          if [[ -n "${PASSWORD}" && "${PASSWORD}" != "password" ]]; then
-            HASH=$(openssl passwd -1 "${PASSWORD}")
-            sed -i "s|^root::|root:${HASH}:|" package/base-files/files/etc/shadow
-          else
-            sed -i 's|^root::|root:$1$V4UetPzk$CYXluq4wUazHjmCDBCqXF.:|' package/base-files/files/etc/shadow
-          fi
-
-          # 设置默认 IP
-          OPENWRT_IP="${{ inputs.openwrt_ip }}"
-          DEFAULT_IP="192.168.1.1"
-          if [[ -n "${OPENWRT_IP}" && "${OPENWRT_IP}" != "${DEFAULT_IP}" ]]; then
-            sed -i "/lan) ipad=\${ipaddr:-/s/\${ipaddr:-\"[^\"]*\"}/\${ipaddr:-\"${OPENWRT_IP}\"}/" package/base-files/*/bin/config_generate
-          fi
-
-          # 设置时区
-          sed -i 's/CONFIG_TARGET_OPT_UART=.*//' .config || true
           mkdir -p files/etc/uci-defaults
-          cat > files/etc/uci-defaults/99-custom << 'INITEOF'
+          cat > files/etc/uci-defaults/99-custom << 'EOF'
           #!/bin/sh
-          uci set system.@system[0].timezone='CST-8'
-          uci set system.@system[0].zonename='Asia/Shanghai'
+          # 设置 root 密码（使用 passwd 命令，兼容 busybox）
+          echo -e "__ROOT_PW__\n__ROOT_PW__" | passwd root >/dev/null 2>&1
+          # 设置主机名
+          uci set system.@system[0].hostname='mozart2'
           uci commit system
           exit 0
-          INITEOF
+          EOF
           chmod +x files/etc/uci-defaults/99-custom
+          sed -i "s/__ROOT_PW__/${{ inputs.root_password }}/g" files/etc/uci-defaults/99-custom
 
-      - name: Download packages
+      # ============================================
+      # 9. 下载源码包
+      # ============================================
+      - name: Download package sources
         run: |
           cd openwrt/
           make download -j8
           find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
 
-      - name: Get source hash for cache key
-        id: hash
+      # ============================================
+      # 10. 准备内核源码并注入 DTB 编译目标（关键修复）
+      # ============================================
+      - name: Prepare kernel and inject DTB target
         run: |
           cd openwrt/
-          source_hash=$(git rev-parse HEAD)
-          echo "source_hash=${source_hash}" >> ${GITHUB_OUTPUT}
+          echo "=== Preparing kernel source ==="
+          make target/linux/prepare V=s
 
-      - name: Cache ccache
-        uses: actions/cache@v5
-        with:
-          path: /builder/openwrt/.ccache
-          key: imx8mn-openwrt-${{ steps.hash.outputs.source_hash }}
-          restore-keys: |
-            imx8mn-openwrt-
+          # 找到内核源码目录
+          KERNEL_DIR=$(find build_dir -maxdepth 3 -type d -name "linux-*.*" | head -1)
+          if [[ -z "${KERNEL_DIR}" ]]; then
+            echo "ERROR: Could not find kernel source directory!"
+            find build_dir -maxdepth 4 -type d -name "linux-*" 2>/dev/null | head -10
+            exit 1
+          fi
+          echo "Kernel dir: ${KERNEL_DIR}"
 
-      - name: Compile
+          # 修改内核 DTS Makefile，注册 mozart2 DTB 编译目标
+          DTS_MAKEFILE="${KERNEL_DIR}/arch/arm64/boot/dts/freescale/Makefile"
+          if [[ -f "${DTS_MAKEFILE}" ]]; then
+            if grep -q "imx8mn-mozart2.dtb" "${DTS_MAKEFILE}"; then
+              echo "imx8mn-mozart2.dtb already in kernel Makefile"
+            else
+              # 在 imx8mn-ddr4-evk.dtb 行后添加
+              sed -i '/imx8mn-ddr4-evk\.dtb/a dtb-$(CONFIG_ARCH_MXC) += imx8mn-mozart2.dtb' "${DTS_MAKEFILE}"
+              echo "Added imx8mn-mozart2.dtb to kernel DTS Makefile"
+            fi
+            grep -n "imx8mn-mozart2" "${DTS_MAKEFILE}" || true
+          else
+            echo "WARNING: Kernel DTS Makefile not found at ${DTS_MAKEFILE}"
+            find "${KERNEL_DIR}" -name "Makefile" -path "*/dts/*" 2>/dev/null | head -5
+          fi
+
+          # 确保 DTS 文件已复制到内核源码目录
+          KERNEL_DTS="${KERNEL_DIR}/arch/arm64/boot/dts/freescale/imx8mn-mozart2.dts"
+          if [[ ! -f "${KERNEL_DTS}" ]]; then
+            echo "WARNING: DTS not copied to kernel dir, copying manually..."
+            cp -v target/linux/imx/files/arch/arm64/boot/dts/freescale/imx8mn-mozart2.dts "${KERNEL_DTS}"
+          fi
+          ls -la "${KERNEL_DTS}"
+
+      # ============================================
+      # 11. 编译
+      # ============================================
+      - name: Compile OpenWrt
         id: compile
         run: |
           cd openwrt/
-          echo "Compiling with $(nproc) threads"
-          make -j$(($(nproc) + 1)) V=s || make -j1 || make -j1 V=s
-
-          echo ""
-          echo "=== Build output ==="
-          ls -alh bin/targets/imx/cortexa53/* || true
-
+          echo "Compiling with $(nproc) threads..."
+          make -j$(($(nproc) + 1)) V=s 2>&1 | tail -100
+          RET=${PIPESTATUS[0]}
+          if [[ ${RET} -ne 0 ]]; then
+            echo "First build failed, retrying with -j1 for error details..."
+            make -j1 V=s 2>&1 | tail -300
+            RET=${PIPESTATUS[0]}
+          fi
+          if [[ ${RET} -ne 0 ]]; then
+            echo "status=failed" >> ${GITHUB_OUTPUT}
+            exit 1
+          fi
           echo "status=success" >> ${GITHUB_OUTPUT}
+          ccache -s 2>/dev/null || true
 
       # ============================================
-      # 编译 U-Boot for i.MX8MN EVK
-      # 用 OpenWrt 工具链直接编译 U-Boot 2024.10
+      # 12. 验证镜像并确保 DTB 正确
       # ============================================
-      - name: Build U-Boot for i.MX8MN
-        id: uboot
+      - name: Verify and fix image DTB
         if: ${{ steps.compile.outputs.status == 'success' }}
         run: |
-          cd ${{ github.workspace }}
+          cd openwrt/
+          OUT_DIR="bin/targets/imx/cortexa53"
 
-          # 安装依赖
-          sudo apt-get -y install gcc-aarch64-linux-gnu python3-pyelftools python3-setuptools bison flex swig libssl-dev
+          echo "=== Build output files ==="
+          ls -lah "${OUT_DIR}/"
 
-          # 找到 OpenWrt 工具链路径（用于 U-Boot 编译）
-          TC_DIR=$(cd openwrt/staging_dir/toolchain-* 2>/dev/null && pwd | head -1)
-          TC_PREFIX=$(find "${TC_DIR}/bin" -name "aarch64-openwrt-linux-*gcc" | head -1 | sed 's/gcc$//')
-          echo "Toolchain dir: ${TC_DIR}"
-          echo "Toolchain prefix: ${TC_PREFIX}"
-          echo "GCC test: $(${TC_PREFIX}gcc --version 2>&1 | head -1)"
+          # 找到镜像
+          IMG_GZ=$(ls ${OUT_DIR}/*.img.gz 2>/dev/null | head -1)
+          if [[ -z "${IMG_GZ}" ]]; then
+            echo "WARNING: No .img.gz found, listing all outputs..."
+            ls -la ${OUT_DIR}/
+            exit 0
+          fi
+          echo "Image: ${IMG_GZ}"
 
-          # 找到 staging_dir image 目录
-          STAGING_IMG=$(cd openwrt/staging_dir/target-* 2>/dev/null && pwd | head -1)/image
-          mkdir -p "${STAGING_IMG}"
-          echo "Staging image dir: ${STAGING_IMG}"
+          # 解压
+          gunzip -k -f "${IMG_GZ}" 2>/dev/null || true
+          IMG="${IMG_GZ%.gz}"
+          [[ -f "${IMG}" ]] || { echo "Decompression failed"; exit 1; }
 
-          # ============================================
-          # 1. 构建 ARM Trusted Firmware (bl31.bin)
-          # ============================================
-          echo "=== Building ATF ==="
-          git clone --depth=1 -b v2.10.0 https://github.com/ARM-software/arm-trusted-firmware.git atf || \
-          git clone --depth=1 https://github.com/ARM-software/arm-trusted-firmware.git atf
-          cd atf
+          # 获取 boot 分区偏移
+          BOOT_INFO=$(parted "${IMG}" unit B print 2>/dev/null || true)
+          BOOT_START=$(echo "${BOOT_INFO}" | grep "^ 1 " | awk '{print $2}' | tr -d 'B')
 
-          make CROSS_COMPILE=aarch64-linux-gnu- PLAT=imx8mn bl31 -j$(nproc) 2>&1 | tail -30
-          ATF_RET=${PIPESTATUS[0]}
-
-          if [[ ${ATF_RET} -ne 0 ]]; then
-            echo "Mainline ATF failed (exit ${ATF_RET}), trying NXP imx-atf..."
-            cd ${{ github.workspace }}
-            git clone --depth=1 https://github.com/nxp-imx/imx-atf.git atf-nxp
-            cd atf-nxp
-            make CROSS_COMPILE=aarch64-linux-gnu- PLAT=imx8mn bl31 -j$(nproc) 2>&1 | tail -30
-            ATF_RET=${PIPESTATUS[0]}
+          if [[ -z "${BOOT_START}" ]]; then
+            echo "WARNING: Could not detect boot partition, skipping DTB check"
+            gzip -k -f "${IMG}"
+            exit 0
           fi
 
-          if [[ ${ATF_RET} -eq 0 ]]; then
-            BL31_PATH=$(find build -name bl31.bin | head -1)
-            if [[ -n "${BL31_PATH}" ]]; then
-              cp "${BL31_PATH}" "${STAGING_IMG}/bl31_imx8mn.bin"
-              echo "bl31.bin ready: $(ls -la ${STAGING_IMG}/bl31_imx8mn.bin)"
+          echo "Boot partition offset: ${BOOT_START}"
+          mkdir -p /tmp/bootmnt
+          sudo mount -o loop,offset=${BOOT_START} "${IMG}" /tmp/bootmnt 2>/dev/null || {
+            echo "WARNING: Could not mount boot partition"
+            gzip -k -f "${IMG}"
+            exit 0
+          }
+
+          echo "=== Boot partition contents ==="
+          ls -la /tmp/bootmnt/
+
+          # 检查 Mozart 2 DTB 是否存在
+          if [[ -f "/tmp/bootmnt/imx8mn-mozart2.dtb" ]]; then
+            echo "✅ imx8mn-mozart2.dtb found in boot partition"
+            strings /tmp/bootmnt/imx8mn-mozart2.dtb | grep -i "model" | head -3 || true
+          else
+            echo "⚠️  imx8mn-mozart2.dtb NOT found, checking for other dtbs..."
+            find /tmp/bootmnt -name "*.dtb" -exec ls -la {} \;
+
+            # 尝试从 build_dir 找到编译好的 dtb 并复制进去
+            MOZART2_DTB=$(find build_dir -name "imx8mn-mozart2.dtb" 2>/dev/null | head -1)
+            if [[ -n "${MOZART2_DTB}" && -f "${MOZART2_DTB}" ]]; then
+              echo "Copying ${MOZART2_DTB} to boot partition..."
+              sudo cp "${MOZART2_DTB}" /tmp/bootmnt/imx8mn-mozart2.dtb
+              echo "✅ DTB copied to boot partition"
             else
-              echo "ERROR: bl31.bin not found after successful build"
-              ATF_RET=1
+              echo "WARNING: Compiled imx8mn-mozart2.dtb not found in build_dir"
             fi
           fi
 
-          if [[ ${ATF_RET} -ne 0 ]]; then
-            echo "ERROR: ATF build failed"
-            echo "status=failed" >> ${GITHUB_OUTPUT}
-            echo "reason=ATF build failed" >> ${GITHUB_OUTPUT}
-            exit 0
+          # 检查启动脚本是否引用正确的 dtb
+          if [[ -f "/tmp/bootmnt/boot.scr" ]]; then
+            echo "=== boot.scr detected (binary, cannot auto-check) ==="
+            echo "Please ensure U-Boot loads imx8mn-mozart2.dtb"
+          fi
+          if [[ -f "/tmp/bootmnt/uEnv.txt" ]]; then
+            echo "=== uEnv.txt contents ==="
+            cat /tmp/bootmnt/uEnv.txt
+          fi
+          if [[ -f "/tmp/bootmnt/extlinux/extlinux.conf" ]]; then
+            echo "=== extlinux.conf contents ==="
+            cat /tmp/bootmnt/extlinux/extlinux.conf
           fi
 
-          # ============================================
-          # 2. 克隆 U-Boot 2024.10
-          # ============================================
-          echo "=== Cloning U-Boot ==="
-          cd ${{ github.workspace }}
-          git clone --depth=1 -b v2024.10 https://github.com/u-boot/u-boot.git u-boot-src || \
-          git clone --depth=1 https://github.com/u-boot/u-boot.git u-boot-src
-          cd u-boot-src
+          sync
+          sudo umount /tmp/bootmnt
 
-          # 手动创建 asm 目录，解决符号链接问题
-          mkdir -p arch/arm64/include/asm
+          # 重新压缩
+          gzip -k -f "${IMG}"
+          echo "=== Image verification complete ==="
 
-          # ============================================
-          # 3. 配置 U-Boot
-          # ============================================
-          echo "=== Configuring U-Boot ==="
-          make ARCH=arm64 CROSS_COMPILE="${TC_PREFIX}" imx8mn_evk_defconfig 2>&1
-          if [[ ! -f .config ]]; then
-            echo "ERROR: defconfig failed, .config not found"
-            echo "status=failed" >> ${GITHUB_OUTPUT}
-            echo "reason=U-Boot defconfig failed" >> ${GITHUB_OUTPUT}
-            exit 0
-          fi
-          echo "defconfig OK"
-
-          # ============================================
-          # 4. 准备 DDR 固件
-          # ============================================
-          echo "=== Preparing DDR firmware ==="
-          FW_IMX_DIR=$(find "${{ github.workspace }}/openwrt/staging_dir" -type d -name "firmware-imx" 2>/dev/null | head -1 || echo "")
-          if [[ -z "${FW_IMX_DIR}" ]]; then
-            echo "firmware-imx not found in staging, downloading manually..."
-            for fw in lpddr4_pmu_train_1d_imem lpddr4_pmu_train_1d_dmem \
-                       lpddr4_pmu_train_2d_imem lpddr4_pmu_train_2d_dmem; do
-              wget -q -O "${fw}.bin" "https://github.com/nxp-imx/imx-firmware/raw/main/firmware/${fw}.bin" 2>/dev/null || \
-              wget -q -O "${fw}.bin" "https://github.com/nxp-imx/imx-firmware/raw/lf-6.6.3_1.0.0/firmware/${fw}.bin" 2>/dev/null || true
-            done
-          else
-            echo "firmware-imx found at: ${FW_IMX_DIR}"
-            cp "${FW_IMX_DIR}"/*.bin . 2>/dev/null || true
-          fi
-          ls -la *.bin 2>/dev/null || echo "WARNING: No firmware .bin files found"
-
-          # ============================================
-          # 5. 编译 flash.bin
-          # ============================================
-          echo "=== Building U-Boot flash.bin ==="
-          make ARCH=arm64 CROSS_COMPILE="${TC_PREFIX}" \
-               BL31="${STAGING_IMG}/bl31_imx8mn.bin" \
-               -j$(nproc) flash.bin 2>&1 | tail -100
-          UBOOT_RET=${PIPESTATUS[0]}
-
-          if [[ ${UBOOT_RET} -ne 0 ]]; then
-            echo "ERROR: U-Boot build failed (exit ${UBOOT_RET})"
-            echo "--- Last 200 lines of build log ---"
-            make ARCH=arm64 CROSS_COMPILE="${TC_PREFIX}" \
-                 BL31="${STAGING_IMG}/bl31_imx8mn.bin" \
-                 flash.bin 2>&1 | tail -200
-            echo "status=failed" >> ${GITHUB_OUTPUT}
-            echo "reason=U-Boot build failed (exit ${UBOOT_RET})" >> ${GITHUB_OUTPUT}
-            exit 0
-          fi
-
-          # ============================================
-          # 6. 验证输出
-          # ============================================
-          if [[ -f flash.bin ]]; then
-            echo "SUCCESS: flash.bin built!"
-            echo "flash.bin size: $(du -h flash.bin | cut -f1)"
-            mkdir -p ${{ github.workspace }}/openwrt/output
-            cp flash.bin ${{ github.workspace }}/openwrt/output/u-boot-imx8mn-evk_flash.bin
-            echo "status=success" >> ${GITHUB_OUTPUT}
-          else
-            echo "ERROR: flash.bin not found after successful build"
-            echo "Build artifacts in current dir:"
-            find . -maxdepth 2 -name "*.bin" -o -name "flash*" 2>/dev/null
-            echo "status=failed" >> ${GITHUB_OUTPUT}
-            echo "reason=flash.bin not generated" >> ${GITHUB_OUTPUT}
-          fi
-
-      - name: Prepare release artifacts
+      # ============================================
+      # 13. 整理输出
+      # ============================================
+      - name: Organize output
         if: ${{ steps.compile.outputs.status == 'success' }}
         run: |
           cd openwrt/
           mkdir -p output
-
-          # 复制 SD 卡镜像（也适用于 eMMC user area 烧录）
           cp -f bin/targets/imx/cortexa53/*.img.gz output/ 2>/dev/null || true
-          cp -f bin/targets/imx/cortexa53/*.img output/ 2>/dev/null || true
-
-          # 复制 rootfs.tar.gz
-          cp -f bin/targets/imx/cortexa53/*rootfs.tar.gz output/ 2>/dev/null || true
-
-          # 复制 config
-          cp -f .config output/config
-
-          # 复制 manifest
           cp -f bin/targets/imx/cortexa53/*.manifest output/ 2>/dev/null || true
+          cp -f .config output/config
+          echo "=== Final output ==="
+          ls -lah output/
 
-          # 重命名文件
-          OW_VERSION="${{ env.OW_VERSION }}"
-          DATE=$(date +%Y.%m.%d)
-          cd output
-          for f in *.img.gz; do
-            [[ -f "$f" ]] && mv "$f" "imx8mn-evk_openwrt-${OW_VERSION}_${DATE}.img.gz"
-          done
-          for f in *.img; do
-            [[ -f "$f" ]] && mv "$f" "imx8mn-evk_openwrt-${OW_VERSION}_${DATE}.img"
-          done
-
-          # ============================================
-          # 创建 uuu 烧录脚本
-          # ============================================
-          cat > uuu_emmc_flash.auto << 'UUUEOF'
-          # uuu script for i.MX8MN eMMC flashing via USB
-          # 使用方法:
-          #   1. 设置 boot 开关到 Serial Download Mode
-          #   2. 连接 USB 线
-          #   3. 运行: uuu uuu_emmc_flash.auto
-          #
-          # 文件要求:
-          #   - flash.bin (U-Boot SPL + U-Boot proper)
-          #   - imx8mn-evk_openwrt-*.img (OpenWrt 镜像)
-
-          # Step 1: 通过 SDP 加载 flash.bin（U-Boot SPL）
-          SDPS: boot -f flash.bin
-
-          # Step 2: 等待 U-Boot 启动 fastboot
-          FB: ucmd setenv fastboot_dev 2
-          FB: ucmd setenv mmcpart 1
-
-          # Step 3: 写入 flash.bin 到 eMMC boot partition
-          FB: flash bootloader flash.bin
-
-          # Step 4: 切换到 eMMC user area
-          FB: ucmd setenv mmcpart 0
-
-          # Step 5: 写入 OpenWrt 镜像到 eMMC user area
-          FB: flash -raw2sparse imx8mn-evk_openwrt-*.img
-
-          # Step 6: 完成
-          FB: done
-          UUUEOF
-
-          # 创建简化版 uuu 脚本（手动指定文件名）
-          cat > uuu_emmc_flash.sh << 'UUUSHEOF'
-          #!/bin/bash
-          # uuu 烧录脚本 for i.MX8MN eMMC
-          # 安装 uuu: pip3 install uuu
-          # 或: https://github.com/nxp-imx/mfgtools/releases
-          set -e
-
-          FLASH_BIN="$1"
-          OWRT_IMG="$2"
-
-          if [[ -z "${FLASH_BIN}" || -z "${OWRT_IMG}" ]]; then
-            echo "Usage: $0 <flash.bin> <openwrt.img>"
-            echo "Example: $0 u-boot-imx8mn-evk_flash.bin imx8mn-evk_openwrt-v25.12.5_2026.09.01.img"
-            exit 1
-          fi
-
-          if [[ ! -f "${FLASH_BIN}" ]]; then
-            echo "Error: ${FLASH_BIN} not found"
-            exit 1
-          fi
-
-          if [[ ! -f "${OWRT_IMG}" ]]; then
-            echo "Error: ${OWRT_IMG} not found"
-            exit 1
-          fi
-
-          echo "=== i.MX8MN eMMC Flash Tool ==="
-          echo "flash.bin: ${FLASH_BIN}"
-          echo "OpenWrt image: ${OWRT_IMG}"
-          echo ""
-          echo "请确认:"
-          echo "  1. Boot 开关已设置为 Serial Download Mode"
-          echo "  2. USB 线已连接"
-          echo ""
-          read -p "按 Enter 开始烧录..."
-
-          # 创建临时 uuu 脚本
-          TMP_SCRIPT=$(mktemp /tmp/uuu_XXXXX.auto)
-          cat > "${TMP_SCRIPT}" << EOF
-          SDPS: boot -f ${FLASH_BIN}
-          FB: ucmd setenv fastboot_dev 2
-          FB: ucmd setenv mmcpart 1
-          FB: flash bootloader ${FLASH_BIN}
-          FB: ucmd setenv mmcpart 0
-          FB: flash -raw2sparse ${OWRT_IMG}
-          FB: done
-          EOF
-
-          uuu "${TMP_SCRIPT}"
-          rm -f "${TMP_SCRIPT}"
-          echo ""
-          echo "=== 烧录完成！==="
-          echo "将 boot 开关切回 eMMC 启动模式，重新上电即可"
-          UUUSHEOF
-          chmod +x uuu_emmc_flash.sh
-
-          echo "=== Output files ==="
-          ls -alh
-
+      # ============================================
+      # 14. 发布到 Release
+      # ============================================
       - name: Upload to Release
         if: ${{ steps.compile.outputs.status == 'success' }}
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.build_tag }}
-          name: OpenWrt for i.MX8MN EVK
+          name: OpenWrt for Mozart 2 (i.MX8MN) - ${{ env.build_tag }}
           files: |
             openwrt/output/*
-          overwrite_files: true
           make_latest: true
           token: ${{ secrets.GITHUB_TOKEN }}
           body: |
-            ### i.MX8MN EVK OpenWrt Image
-            - Target: `imx/cortexa53`
-            - Device: `nxp_imx8mn-evk` (based on `imx8mn-evk.dts`)
-            - Version: `${{ env.OW_VERSION }}`
-            - Default IP: `${{ inputs.openwrt_ip }}`
+            ### OpenWrt for Mozart 2 (i.MX8MN)
+            - Source: ${{ inputs.source_repo }} @ ${{ inputs.source_branch }}
+            - Device: imx8mn-mozart2
+            - Default IP: `192.168.1.1`
             - Default username: `root`
             - Default password: `${{ inputs.root_password }}`
 
-            ### 文件列表
-            | 文件 | 说明 |
-            |------|------|
-            | `imx8mn-evk_*.img.gz` | OpenWrt 系统镜像（eMMC user area） |
-            | `u-boot-imx8mn-evk_flash.bin` | U-Boot SPL + proper（eMMC boot partition） |
-            | `uuu_emmc_flash.auto` | uuu 自动烧录脚本 |
-            | `uuu_emmc_flash.sh` | uuu 烧录辅助脚本 |
-
-            ### USB 烧录方法（仅 eMMC）
-
-            1. 安装 uuu 工具：
-               ```bash
-               pip3 install uuu
-               ```
-
-            2. 设置 boot 开关到 **Serial Download Mode**
-
-            3. 连接 USB 线
-
-            4. 解压镜像：
-               ```bash
-               gunzip imx8mn-evk_*.img.gz
-               ```
-
-            5. 运行烧录脚本：
-               ```bash
-               ./uuu_emmc_flash.sh u-boot-imx8mn-evk_flash.bin imx8mn-evk_*.img
-               ```
-
-            6. 烧录完成后，将 boot 开关切回 **eMMC 启动模式**，重新上电
-
-            ### SD 卡烧录方法（如有 SD 卡）
-            ```bash
-            gunzip imx8mn-evk_*.img.gz
-            sudo dd if=imx8mn-evk_*.img of=/dev/sdX bs=1M conv=fsync
-            sync
-            ```
+            ### 说明
+            - 基于 i.MX8MN Cortex-A53 目标编译
+            - 使用自定义 imx8mn-mozart2.dts
+            - 已包含 swconfig + RTL 交换机驱动
+            - 如启动异常，请检查 U-Boot 是否加载 `imx8mn-mozart2.dtb`
