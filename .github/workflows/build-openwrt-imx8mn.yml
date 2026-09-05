@@ -145,20 +145,16 @@ jobs:
           # --- 5.3 在 cortexa53.mk 中注册设备 ---
           MK_FILE="target/linux/imx/image/cortexa53.mk"
           if ! grep -q "imx8mn-mozart2" "${MK_FILE}"; then
-            echo "" >> "${MK_FILE}"
-            cat >> "${MK_FILE}" << 'EOF'
-
-define Device/imx8mn-mozart2
-  DEVICE_VENDOR := B&O
-  DEVICE_MODEL := Mozart 2 (i.MX8MN)
-  DEVICE_DTS := imx8mn-mozart2
-  DEVICE_PACKAGES := kmod-swconfig kmod-switch-rtl8366s kmod-switch-rtl8306 \
-    kmod-fs-ext4 kmod-fs-vfat kmod-fs-ntfs3 \
-    kmod-usb-core kmod-usb2 kmod-usb3 \
-    wpad-mesh-openssl
-endef
-TARGET_DEVICES += imx8mn-mozart2
-EOF
+            printf '%s\n' \
+              '' \
+              'define Device/imx8mn-mozart2' \
+              '  DEVICE_VENDOR := B&O' \
+              '  DEVICE_MODEL := Mozart 2 (i.MX8MN)' \
+              '  DEVICE_DTS := imx8mn-mozart2' \
+              '  DEVICE_PACKAGES := kmod-swconfig kmod-switch-rtl8366s kmod-switch-rtl8306 kmod-fs-ext4 kmod-fs-vfat kmod-fs-ntfs3 kmod-usb-core kmod-usb2 kmod-usb3 wpad-mesh-openssl' \
+              'endef' \
+              'TARGET_DEVICES += imx8mn-mozart2' \
+              >> "${MK_FILE}"
             echo "Registered imx8mn-mozart2 device in ${MK_FILE}"
           else
             echo "Device imx8mn-mozart2 already registered"
@@ -185,59 +181,59 @@ EOF
       - name: Generate config
         run: |
           cd openwrt/
-          cat > .config << EOF
-          # Target
-          CONFIG_TARGET_imx=y
-          CONFIG_TARGET_imx_cortexa53=y
-          CONFIG_TARGET_DEVICE_imx_cortexa53_DEVICE_imx8mn-mozart2=y
-
-          # Partition size
-          CONFIG_TARGET_ROOTFS_PARTSIZE=512
-          CONFIG_TARGET_KERNEL_PARTSIZE=32
-
-          # ccache
-          CONFIG_CCACHE=${{ inputs.use_ccache && 'y' || 'n' }}
-
-          # LuCI & apps
-          CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
-          CONFIG_PACKAGE_luci-theme-material=y
-          CONFIG_PACKAGE_luci-app-firewall=y
-          CONFIG_PACKAGE_luci-app-opkg=y
-          CONFIG_PACKAGE_luci-app-upnp=y
-          CONFIG_PACKAGE_luci-app-ddns=y
-          CONFIG_PACKAGE_luci-app-wol=y
-          CONFIG_PACKAGE_luci-app-nlbwmon=y
-
-          # Network & wireless
-          CONFIG_PACKAGE_wpad-mesh-openssl=y
-          CONFIG_PACKAGE_wpa-cli=y
-
-          # Utilities
-          CONFIG_PACKAGE_openssh-sftp-server=y
-          CONFIG_PACKAGE_curl=y
-          CONFIG_PACKAGE_wget-ssl=y
-          CONFIG_PACKAGE_htop=y
-          CONFIG_PACKAGE_nano=y
-          CONFIG_PACKAGE_usbutils=y
-          CONFIG_PACKAGE_pciutils=y
-          CONFIG_PACKAGE_block-mount=y
-
-          # Filesystem
-          CONFIG_PACKAGE_kmod-fs-ext4=y
-          CONFIG_PACKAGE_kmod-fs-vfat=y
-          CONFIG_PACKAGE_kmod-fs-ntfs3=y
-
-          # Switch
-          CONFIG_PACKAGE_kmod-switch-rtl8366s=y
-          CONFIG_PACKAGE_kmod-switch-rtl8306=y
-          CONFIG_PACKAGE_kmod-swconfig=y
-
-          # USB
-          CONFIG_PACKAGE_kmod-usb-core=y
-          CONFIG_PACKAGE_kmod-usb2=y
-          CONFIG_PACKAGE_kmod-usb3=y
-          EOF
+          printf '%s\n' \
+            '# Target' \
+            'CONFIG_TARGET_imx=y' \
+            'CONFIG_TARGET_imx_cortexa53=y' \
+            'CONFIG_TARGET_DEVICE_imx_cortexa53_DEVICE_imx8mn-mozart2=y' \
+            '' \
+            '# Partition size' \
+            'CONFIG_TARGET_ROOTFS_PARTSIZE=512' \
+            'CONFIG_TARGET_KERNEL_PARTSIZE=32' \
+            '' \
+            '# ccache' \
+            "CONFIG_CCACHE=${{ inputs.use_ccache && 'y' || 'n' }}" \
+            '' \
+            '# LuCI & apps' \
+            'CONFIG_PACKAGE_luci=y' \
+            'CONFIG_PACKAGE_luci-i18n-base-zh-cn=y' \
+            'CONFIG_PACKAGE_luci-theme-material=y' \
+            'CONFIG_PACKAGE_luci-app-firewall=y' \
+            'CONFIG_PACKAGE_luci-app-opkg=y' \
+            'CONFIG_PACKAGE_luci-app-upnp=y' \
+            'CONFIG_PACKAGE_luci-app-ddns=y' \
+            'CONFIG_PACKAGE_luci-app-wol=y' \
+            'CONFIG_PACKAGE_luci-app-nlbwmon=y' \
+            '' \
+            '# Network & wireless' \
+            'CONFIG_PACKAGE_wpad-mesh-openssl=y' \
+            'CONFIG_PACKAGE_wpa-cli=y' \
+            '' \
+            '# Utilities' \
+            'CONFIG_PACKAGE_openssh-sftp-server=y' \
+            'CONFIG_PACKAGE_curl=y' \
+            'CONFIG_PACKAGE_wget-ssl=y' \
+            'CONFIG_PACKAGE_htop=y' \
+            'CONFIG_PACKAGE_nano=y' \
+            'CONFIG_PACKAGE_usbutils=y' \
+            'CONFIG_PACKAGE_pciutils=y' \
+            'CONFIG_PACKAGE_block-mount=y' \
+            '' \
+            '# Filesystem' \
+            'CONFIG_PACKAGE_kmod-fs-ext4=y' \
+            'CONFIG_PACKAGE_kmod-fs-vfat=y' \
+            'CONFIG_PACKAGE_kmod-fs-ntfs3=y' \
+            '' \
+            '# Switch' \
+            'CONFIG_PACKAGE_kmod-switch-rtl8366s=y' \
+            'CONFIG_PACKAGE_kmod-switch-rtl8306=y' \
+            'CONFIG_PACKAGE_kmod-swconfig=y' \
+            '' \
+            '# USB' \
+            'CONFIG_PACKAGE_kmod-usb-core=y' \
+            'CONFIG_PACKAGE_kmod-usb2=y' \
+            'CONFIG_PACKAGE_kmod-usb3=y' \
+            > .config
 
           make defconfig
           echo "=== Target device check ==="
@@ -250,15 +246,13 @@ EOF
         run: |
           cd openwrt/
           mkdir -p files/etc/uci-defaults
-          cat > files/etc/uci-defaults/99-custom << 'EOF'
-          #!/bin/sh
-          # 设置 root 密码（使用 passwd 命令，兼容 busybox）
-          echo -e "__ROOT_PW__\n__ROOT_PW__" | passwd root >/dev/null 2>&1
-          # 设置主机名
-          uci set system.@system[0].hostname='mozart2'
-          uci commit system
-          exit 0
-          EOF
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'echo -e "__ROOT_PW__\n__ROOT_PW__" | passwd root >/dev/null 2>&1' \
+            "uci set system.@system[0].hostname='mozart2'" \
+            'uci commit system' \
+            'exit 0' \
+            > files/etc/uci-defaults/99-custom
           chmod +x files/etc/uci-defaults/99-custom
           sed -i "s/__ROOT_PW__/${{ inputs.root_password }}/g" files/etc/uci-defaults/99-custom
 
