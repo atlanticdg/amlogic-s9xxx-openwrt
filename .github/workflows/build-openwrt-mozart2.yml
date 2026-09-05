@@ -1,0 +1,434 @@
+#============================================================================================
+# Build OpenWrt for i.MX8MN Mozart 2
+# Source: ImmortalWrt 25.12
+# DTB: imx8mn-mozart2.dts (自定义)
+#============================================================================================
+
+name: Build OpenWrt for Mozart 2
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: "OpenWrt 源分支"
+        required: true
+        default: "immortalwrt_openwrt-25.12"
+        type: choice
+        options:
+          - immortalwrt_openwrt-25.12
+          - immortalwrt_master
+          - openwrt_openwrt-25.12
+          - openwrt_main
+      root_password:
+        description: "root 密码"
+        required: false
+        default: "password"
+        type: string
+      use_ccache:
+        description: "使用 ccache 加速"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  TZ: Etc/UTC
+  CCACHE_DIR: /builder/openwrt/.ccache
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Initialize build environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          docker rmi -f $(docker images -q) 2>/dev/null || true
+          [[ -n "${AGENT_TOOLSDIRECTORY}" ]] && sudo rm -rf "${AGENT_TOOLSDIRECTORY}"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android 2>/dev/null
+          sudo swapoff -a
+          sudo rm -f /swapfile /mnt/swapfile
+          sudo apt-get -y update
+          sudo apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+          sudo apt-get -y install $(curl -fsSL https://ophub.org/ubuntu2404-make-openwrt-depends)
+          sudo systemctl daemon-reload
+          sudo apt-get -y autoremove --purge
+          sudo apt-get clean
+          sudo sed -i '/NVM_DIR/d;/skel/d' /root/{.bashrc,.profile}
+          sudo rm -rf ~/{.cargo,.dotnet,.rustup}
+          sudo timedatectl set-timezone "${TZ:-Etc/UTC}"
+          sudo ntpdate ntp.ubuntu.com 0.pool.ntp.org || true
+          sudo timedatectl set-ntp true
+          date -u
+
+      - name: Create virtual disk
+        run: |
+          root_avail=$(df --block-size=1G / | tail -1 | awk '{print $4}')
+          root_size=$(( root_avail - 4 ))
+          [[ "${root_size}" -gt 0 ]] || { echo "Error: Insufficient space"; exit 1; }
+          sudo truncate -s "${root_size}"G /root.img
+          build_dev=$(sudo losetup --find --show /root.img)
+          sudo mkfs.xfs -f -i sparse=0 -b size=4096 "${build_dev}"
+          sudo mkdir -p /builder
+          sudo mount "${build_dev}" /builder
+          sudo chown -R runner:runner /builder
+          df -Th
+
+      - name: Clone OpenWrt source
+        working-directory: /builder
+        run: |
+          SRC_BRANCH="${{ inputs.source_branch }}"
+
+          case "${SRC_BRANCH}" in
+            immortalwrt_openwrt-25.12)
+              REPO="https://github.com/immortalwrt/immortalwrt.git"
+              BRANCH="openwrt-25.12"
+              ;;
+            immortalwrt_master)
+              REPO="https://github.com/immortalwrt/immortalwrt.git"
+              BRANCH="master"
+              ;;
+            openwrt_openwrt-25.12)
+              REPO="https://github.com/openwrt/openwrt.git"
+              BRANCH="openwrt-25.12"
+              ;;
+            openwrt_main)
+              REPO="https://github.com/openwrt/openwrt.git"
+              BRANCH="main"
+              ;;
+            *)
+              echo "Unknown source branch: ${SRC_BRANCH}"
+              exit 1
+              ;;
+          esac
+
+          echo "Cloning ${REPO} (${BRANCH})..."
+          git clone -q --single-branch --depth=1 --branch="${BRANCH}" "${REPO}" openwrt
+          ln -sf /builder/openwrt ${{ github.workspace }}/openwrt
+          echo "build_tag=OpenWrt_mozart2_${SRC_BRANCH}_$(date +%Y.%m.%d)" >> ${GITHUB_ENV}
+          echo "Source: ${REPO} ${BRANCH}"
+
+      - name: Update feeds
+        run: cd openwrt/ && ./scripts/feeds update -a
+
+      - name: Install feeds
+        run: cd openwrt/ && ./scripts/feeds install -a
+
+      - name: Customize (root password, hostname)
+        run: |
+          cd openwrt/
+          mkdir -p files/etc/uci-defaults
+          cat > files/etc/uci-defaults/99-custom << 'EOF'
+          #!/bin/sh
+          echo "root:__ROOT_PW__" | chpasswd
+          uci set system.@system[0].hostname='mozart2'
+          uci commit system
+          exit 0
+          EOF
+          chmod +x files/etc/uci-defaults/99-custom
+          sed -i "s/__ROOT_PW__/${{ inputs.root_password }}/g" files/etc/uci-defaults/99-custom
+
+      - name: Configure build
+        run: |
+          cd openwrt/
+          cat > .config << 'EOF'
+          CONFIG_TARGET_imx=y
+          CONFIG_TARGET_imx_cortexa53=y
+          CONFIG_TARGET_DEVICE_imx_cortexa53_DEVICE_imx8mn-ddr4-evk=y
+          CONFIG_TARGET_ROOTFS_PARTSIZE=512
+          CONFIG_TARGET_KERNEL_PARTSIZE=32
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+          CONFIG_PACKAGE_luci-theme-material=y
+          CONFIG_PACKAGE_luci-app-firewall=y
+          CONFIG_PACKAGE_luci-app-opkg=y
+          CONFIG_PACKAGE_luci-app-upnp=y
+          CONFIG_PACKAGE_luci-app-ddns=y
+          CONFIG_PACKAGE_luci-app-wol=y
+          CONFIG_PACKAGE_luci-app-nlbwmon=y
+          CONFIG_PACKAGE_wpad-mesh-openssl=y
+          CONFIG_PACKAGE_wpa-cli=y
+          CONFIG_PACKAGE_openssh-sftp-server=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_wget-ssl=y
+          CONFIG_PACKAGE_htop=y
+          CONFIG_PACKAGE_nano=y
+          CONFIG_PACKAGE_usbutils=y
+          CONFIG_PACKAGE_pciutils=y
+          CONFIG_PACKAGE_block-mount=y
+          CONFIG_PACKAGE_kmod-fs-ext4=y
+          CONFIG_PACKAGE_kmod-fs-vfat=y
+          CONFIG_PACKAGE_kmod-fs-ntfs3=y
+          CONFIG_PACKAGE_kmod-switch-rtl8366s=y
+          CONFIG_PACKAGE_kmod-switch-rtl8306=y
+          CONFIG_PACKAGE_kmod-swconfig=y
+          EOF
+          echo "Device: $(grep CONFIG_TARGET_DEVICE .config)"
+
+      - name: Download package sources
+        run: |
+          cd openwrt/
+          make defconfig
+          make download -j8
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Inject mozart2 DTB into kernel
+        run: |
+          cd openwrt/
+
+          echo "=== Preparing kernel source ==="
+          make target/linux/prepare V=s 2>&1 | tail -20
+
+          # 找到内核源码目录
+          KERNEL_DIR=$(find build_dir -maxdepth 3 -type d -name "linux-6.*" | head -1)
+          if [[ -z "${KERNEL_DIR}" ]]; then
+            KERNEL_DIR=$(find build_dir -maxdepth 3 -type d -name "linux-5.*" | head -1)
+          fi
+          echo "Kernel dir: ${KERNEL_DIR}"
+
+          DTS_DIR="${KERNEL_DIR}/arch/arm64/boot/dts/freescale"
+
+          if [[ -z "${KERNEL_DIR}" || ! -d "${DTS_DIR}" ]]; then
+            echo "ERROR: Could not find kernel source directory!"
+            find build_dir -maxdepth 4 -type d -name "linux-*" 2>/dev/null | head -20
+            exit 1
+          fi
+
+          # 复制 DTS 文件
+          cp ${{ github.workspace }}/imx8mn-mozart2.dts "${DTS_DIR}/"
+          echo "Copied imx8mn-mozart2.dts to ${DTS_DIR}/"
+
+          # 添加到 Makefile
+          if grep -q "imx8mn-mozart2" "${DTS_DIR}/Makefile"; then
+            echo "mozart2 already in Makefile"
+          else
+            sed -i '/imx8mn-ddr4-evk\.dtb/a dtb-$(CONFIG_ARCH_MXC) += imx8mn-mozart2.dtb' "${DTS_DIR}/Makefile"
+            echo "Added imx8mn-mozart2.dtb to Makefile"
+          fi
+
+          echo "=== Verify DTS injection ==="
+          ls -la "${DTS_DIR}/imx8mn-mozart2.dts"
+          grep "mozart2" "${DTS_DIR}/Makefile"
+
+      - name: Get source commit hash
+        id: srchash
+        run: |
+          SRC_BRANCH="${{ inputs.source_branch }}"
+          case "${SRC_BRANCH}" in
+            immortalwrt_*) OWNER="immortalwrt"; REPO="immortalwrt"; BRANCH="${SRC_BRANCH#immortalwrt_}" ;;
+            openwrt_*) OWNER="openwrt"; REPO="openwrt"; BRANCH="${SRC_BRANCH#openwrt_}" ;;
+          esac
+          api_url="https://api.github.com/repos/${OWNER}/${REPO}/git/ref/heads/${BRANCH}"
+          source_hash=$(curl -fsSL -m 20 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              ${api_url} | jq -r '.object.sha')
+          [[ -z "${source_hash}" || "${source_hash}" == "null" ]] && source_hash="${{ github.sha }}"
+          echo "source_hash=${source_hash}" >> ${GITHUB_ENV}
+
+      - name: Cache ccache
+        uses: actions/cache@v5
+        with:
+          path: /builder/openwrt/.ccache
+          key: openwrt-mozart2-${{ env.source_hash }}
+          restore-keys:
+            openwrt-mozart2-
+
+      - name: Compile OpenWrt
+        id: compile
+        run: |
+          cd openwrt/
+          echo "Compiling with $(nproc) threads..."
+          make -j$(($(nproc) + 1)) V=s 2>&1 | tail -50
+          RET=${PIPESTATUS[0]}
+          if [[ ${RET} -ne 0 ]]; then
+            echo "Retrying with -j1 V=s..."
+            make -j1 V=s 2>&1 | tail -200
+            RET=${PIPESTATUS[0]}
+          fi
+          [[ ${RET} -eq 0 ]] && echo "status=success" >> ${GITHUB_OUTPUT} || {
+            echo "status=failed" >> ${GITHUB_OUTPUT}; exit 1; }
+          ccache -s 2>/dev/null || true
+
+      # ============================================
+      # 替换 boot 分区的 DTB 为 mozart2 版本
+      # ============================================
+      - name: Replace DTB with mozart2 version
+        if: ${{ steps.compile.outputs.status == 'success' }}
+        run: |
+          cd openwrt/
+
+          echo "=== Generated files ==="
+          ls -lah bin/targets/imx/cortexa53/
+
+          # 找到编译的镜像
+          IMG_GZ=$(ls bin/targets/imx/cortexa53/*imx8mn*.img.gz 2>/dev/null | head -1)
+          if [[ -z "${IMG_GZ}" ]]; then
+            echo "WARNING: No imx8mn .img.gz found, trying all images..."
+            IMG_GZ=$(ls bin/targets/imx/cortexa53/*.img.gz 2>/dev/null | head -1)
+          fi
+          if [[ -z "${IMG_GZ}" ]]; then
+            echo "ERROR: No .img.gz found!"
+            exit 1
+          fi
+          echo "Image: ${IMG_GZ}"
+
+          # 解压（容忍 trailing garbage）
+          gunzip -k -f "${IMG_GZ}" 2>/dev/null || true
+          IMG="${IMG_GZ%.gz}"
+          if [[ ! -f "${IMG}" ]]; then
+            echo "ERROR: Decompression failed!"
+            exit 1
+          fi
+          echo "Decompressed: ${IMG} ($(du -h "${IMG}" | cut -f1))"
+
+          # 找到编译好的 mozart2 DTB
+          MOZART2_DTB=$(find build_dir -path "*/arch/arm64/boot/dts/freescale/imx8mn-mozart2.dtb" 2>/dev/null | head -1)
+          if [[ -z "${MOZART2_DTB}" || ! -f "${MOZART2_DTB}" ]]; then
+            echo "WARNING: mozart2 DTB not found, searching..."
+            MOZART2_DTB=$(find . -name "imx8mn-mozart2.dtb" 2>/dev/null | head -1)
+          fi
+
+          echo "mozart2 DTB: ${MOZART2_DTB}"
+          if [[ -z "${MOZART2_DTB}" || ! -f "${MOZART2_DTB}" ]]; then
+            echo "ERROR: Could not find compiled imx8mn-mozart2.dtb!"
+            find build_dir -name "imx8mn*.dtb" 2>/dev/null | head -10
+            exit 1
+          fi
+          echo "mozart2 DTB size: $(du -h "${MOZART2_DTB}" | cut -f1)"
+
+          # 安装 u-boot-tools
+          sudo apt-get install -y u-boot-tools 2>/dev/null || true
+
+          echo "=== Image partition info ==="
+          fdisk -l "${IMG}" 2>/dev/null || true
+
+          BOOT_INFO=$(parted "${IMG}" unit B print 2>/dev/null || true)
+          BOOT_START=$(echo "${BOOT_INFO}" | grep "^ 1 " | awk '{print $2}' | tr -d 'B')
+          if [[ -n "${BOOT_START}" ]]; then
+            mkdir -p /tmp/bootmnt
+            sudo mount -o loop,offset=${BOOT_START} "${IMG}" /tmp/bootmnt 2>/dev/null && {
+              echo "Boot partition files:"
+              ls -la /tmp/bootmnt/
+
+              # 找 FIT 镜像（kernel.img 或 Image.itb 等）
+              KERNEL_IMG=""
+              for f in kernel.img Image.itb fitImage boot.itb; do
+                if [[ -f "/tmp/bootmnt/${f}" ]]; then
+                  KERNEL_IMG="/tmp/bootmnt/${f}"
+                  break
+                fi
+              done
+
+              if [[ -n "${KERNEL_IMG}" ]]; then
+                echo "FIT image found: ${KERNEL_IMG}"
+                dumpimage -l "${KERNEL_IMG}" 2>/dev/null || echo "dumpimage failed"
+
+                FIT_DIR=/tmp/fit_extract
+                rm -rf "${FIT_DIR}"
+                mkdir -p "${FIT_DIR}"
+                cd "${FIT_DIR}"
+
+                # 提取 kernel 和 fdt
+                dumpimage -T flat_dt -p 0 -o kernel.bin "${KERNEL_IMG}" 2>/dev/null && echo "Extracted kernel" || echo "Failed kernel"
+                dumpimage -T flat_dt -p 1 -o original.dtb "${KERNEL_IMG}" 2>/dev/null && echo "Extracted fdt" || echo "Failed fdt"
+
+                ls -la "${FIT_DIR}/"
+
+                if [[ -f "${FIT_DIR}/original.dtb" ]]; then
+                  echo "Original DTB model:"
+                  strings "${FIT_DIR}/original.dtb" | grep -i "model" | head -3
+                fi
+
+                # 重新打包 FIT
+                if [[ -f "${FIT_DIR}/kernel.bin" ]]; then
+                  echo "=== Rebuilding FIT with mozart2 DTB ==="
+
+                  ITS_B64="L2R0cy12MS87CgovIHsKCWRlc2NyaXB0aW9uID0gIkZJVCBpbWFnZSBmb3IgbW96YXJ0MiI7CgkjYWRkcmVzcy1jZWxscyA9IDwxPjsKCgltYWdlcyB7CgkJa2VybmVsIHsKCQkJZGVzY3JpcHRpb24gPSAiTGludXgga2VybmVsIjsKCQkJZGF0YSA9IC9pbmNiaW4vKCJrZXJuZWwuYmluIik7CgkJCXR5cGUgPSAia2VybmVsIjsKCQkJYXJjaCA9ICJhcm02NCI7CgkJCW9zID0gImxpbnV4IjsKCQkJY29tcHJlc3Npb24gPSAibm9uZSI7CgkJCWxvYWQgPSA8MHg0MDIwMDAwMD47CgkJCWVudHJ5ID0gPDB4NDAyMDAwMDA+OwoJCQloYXNoLTEgewoJCQkJYWxnbyA9ICJzaGEyNTYiOwoJCQl9OwoJCX07CgkJZmR0IHsKCQkJZGVzY3JpcHRpb24gPSAibW96YXJ0MiBEVEIiOwoJCQlkYXRhID0gL2luY2Jpbi8oIm1vemFydDIuZHRiIik7CgkJCXR5cGUgPSAiZmxhdF9kdCI7CgkJCWFyY2ggPSAiYXJtNjQiOwoJCQljb21wcmVzc2lvbiA9ICJub25lIjsKCQkJaGFzaC0xIHsKCQkJCWFsZ28gPSAic2hhMjU2IjsKCQkJfTsKCQl9OwoJfTsKCgljb25maWd1cmF0aW9ucyB7CgkJZGVmYXVsdCA9ICJjb25mLW1vemFydDIiOwoJCWNvbmYtbW96YXJ0MiB7CgkJCWRlc2NyaXB0aW9uID0gIkJvb3Qgd2l0aCBtb3phcnQyIERUQiI7CgkJCWtlcm5lbCA9ICJrZXJuZWwiOwoJCQlmZHQgPSAiZmR0IjsKCQl9OwoJfTsKfTsK"
+                  echo "${ITS_B64}" | base64 -d > /tmp/kernel.its
+                  cp "${MOZART2_DTB}" "${FIT_DIR}/mozart2.dtb"
+
+                  mkimage -f /tmp/kernel.its /tmp/kernel_new.img
+                  if [[ -f /tmp/kernel_new.img ]]; then
+                    echo "New FIT size: $(du -h /tmp/kernel_new.img | cut -f1)"
+                    sudo cp /tmp/kernel_new.img "${KERNEL_IMG}"
+                    echo "FIT image replaced with mozart2 version"
+                  else
+                    echo "ERROR: Failed to build new FIT image"
+                  fi
+                fi
+
+                cd /
+              else
+                # 没有 FIT 镜像，试试单独的 DTB 文件
+                echo "No FIT image found, looking for standalone DTB..."
+                EXISTING_DTB=$(find /tmp/bootmnt -name "imx8mn*.dtb" 2>/dev/null | head -1)
+                if [[ -n "${EXISTING_DTB}" ]]; then
+                  sudo cp "${MOZART2_DTB}" "${EXISTING_DTB}"
+                  echo "Replaced $(basename ${EXISTING_DTB}) with mozart2 DTB"
+                else
+                  sudo cp "${MOZART2_DTB}" /tmp/bootmnt/imx8mn-mozart2.dtb
+                  echo "Copied mozart2 DTB to boot partition"
+                fi
+              fi
+
+              echo "Boot partition (after):"
+              ls -la /tmp/bootmnt/
+
+              sync
+              sudo umount /tmp/bootmnt
+              echo "DTB replacement done"
+            } || echo "Could not mount boot partition"
+          fi
+
+          # 重新压缩
+          gzip -k -f "${IMG}"
+
+          # 输出
+          mkdir -p output
+          cp -f "${IMG}.gz" output/mozart2_openwrt-${{ inputs.source_branch }}_$(date +%Y.%m.%d).img.gz
+
+          echo "=== Final output ==="
+          ls -lah output/
+
+      - name: Organize output
+        if: ${{ steps.compile.outputs.status == 'success' }}
+        run: |
+          cd openwrt/
+          mkdir -p output
+          cp -f bin/targets/imx/cortexa53/*.manifest output/ 2>/dev/null || true
+          cp -f .config output/config
+          ls -lah output/
+
+      - name: Upload to Release
+        if: ${{ steps.compile.outputs.status == 'success' }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.build_tag }}
+          name: OpenWrt for Mozart 2
+          files: |
+            openwrt/output/*
+          overwrite_files: true
+          make_latest: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            ### OpenWrt for Mozart 2 (i.MX8MN)
+            - Source: ${{ inputs.source_branch }}
+            - DTB: Custom imx8mn-mozart2.dtb
+            - Default IP: `192.168.1.1`
+            - Default username: `root`
+            - Default password: `${{ inputs.root_password }}`
+
+            ### 说明
+            - 基于 i.MX8MN DDR4 EVK 配置编译
+            - DTB 替换为 imx8mn-mozart2.dtb
+            - 已包含 swconfig + RTL8365MB 交换机驱动
