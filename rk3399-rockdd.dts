@@ -9,7 +9,6 @@
 #include <dt-bindings/leds/common.h>
 #include <dt-bindings/pwm/pwm.h>
 #include "rk3399.dtsi"
-#include "rk3399-opp.dtsi"
 
 / {
 	model = "ROCK DD";
@@ -44,7 +43,7 @@
 			linux,default-trigger = "default-on";
 		};
 */
-        // ¶¨ÒåºìÉ« LED
+        // å®šä¹‰çº¢è‰² LED
         led_red: led-0 {
             label = "red:user";
             gpios = <&gpio4 RK_PD4 GPIO_ACTIVE_HIGH>;
@@ -52,7 +51,7 @@
             default-state = "off";
         };
 
-        // ¶¨ÒåÂÌÉ« LED
+        // å®šä¹‰ç»¿è‰² LED
         led_green: led-1 {
             label = "green:user";
             gpios = <&gpio4 RK_PD5 GPIO_ACTIVE_HIGH>;
@@ -60,7 +59,7 @@
             default-state = "on";
         };
 
-        // ¶¨ÒåÀ¶É« LED
+        // å®šä¹‰è“è‰² LED
         led_blue: led-2 {
             label = "blue:user";
             gpios = <&gpio4 RK_PD6 GPIO_ACTIVE_HIGH>;
@@ -548,7 +547,7 @@
 			rockchip,pins = <1 RK_PB6 RK_FUNC_GPIO &pcfg_pull_down>;
 		};
 	};
-	/*ÏÂÃæ½Úµã²»ÄÜ¸Ä£¬¸ÄÁËÀ¶ÑÀÓÃ²»ÁË*/
+	/*ä¸‹é¢èŠ‚ç‚¹ä¸èƒ½æ”¹ï¼Œæ”¹äº†è“ç‰™ç”¨ä¸äº†*/
 	usb-typec {
 		vcc5v0_typec_en: vcc5v0-typec-en {
 			rockchip,pins = <1 RK_PA3 RK_FUNC_GPIO &pcfg_pull_up>;
