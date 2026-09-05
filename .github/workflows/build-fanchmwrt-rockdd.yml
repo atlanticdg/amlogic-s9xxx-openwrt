@@ -1,0 +1,338 @@
+#============================================================================================
+# Build FanchmWrt for rockdd (RK3399) from source
+# 源码: https://github.com/fanchmwrt/fanchmwrt
+# 使用 ophub 打包框架生成 rockdd 刷机包
+#============================================================================================
+
+name: Build FanchmWrt for rockdd
+
+on:
+  workflow_dispatch:
+    inputs:
+      fanchmwrt_branch:
+        description: "FanchmWrt 分支"
+        required: true
+        default: "fanchmwrt-25.12.4"
+        type: choice
+        options:
+          - "fanchmwrt-25.12.4"
+          - "fanchmwrt-25.12.2"
+          - "fanchmwrt-24.10.4"
+      openwrt_kernel:
+        description: "内核版本"
+        required: false
+        default: "6.12.y_6.18.y"
+        type: choice
+        options:
+          - "5.10.y"
+          - "5.15.y"
+          - "6.1.y"
+          - "6.6.y"
+          - "6.12.y"
+          - "6.18.y"
+          - "6.12.y_6.18.y"
+      auto_kernel:
+        description: "自动使用最新内核"
+        required: false
+        default: true
+        type: boolean
+      kernel_repo:
+        description: "内核仓库"
+        required: false
+        default: "atlanticdg/kernel"
+        type: choice
+        options:
+          - ophub/kernel
+          - atlanticdg/kernel
+      kernel_usage:
+        description: "内核 tag"
+        required: false
+        default: "stable"
+        type: choice
+        options:
+          - stable
+          - flippy
+          - beta
+      openclash:
+        description: "安装 OpenClash（fanchmwrt 源可能不含此插件）"
+        required: false
+        default: "no"
+        type: choice
+        options:
+          - "no"
+          - "yes"
+      openwrt_ip:
+        description: "路由器 LAN IP"
+        required: false
+        default: "192.168.1.1"
+      root_password:
+        description: "root 密码（默认 password）"
+        required: false
+        default: "password"
+      use_ccache:
+        description: "使用 ccache 加速"
+        required: false
+        default: true
+        type: boolean
+      openwrt_storage:
+        description: "镜像存储类型"
+        required: false
+        default: "save"
+        type: choice
+        options:
+          - save
+          - temp
+      builder_name:
+        description: "编译者签名"
+        required: false
+        default: "ophub"
+        type: choice
+        options:
+          - ophub
+          - angel
+          - yourname
+
+permissions:
+  contents: write
+
+env:
+  TZ: Etc/UTC
+  CCACHE_DIR: /builder/openwrt/.ccache
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    if: ${{ github.event.repository.owner.id == github.event.sender.id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve config directory
+        id: resolve-config
+        run: |
+          # 尝试用 openwrt_main 的配置（fanchmwrt 基于 OpenWrt）
+          if [[ -d "config/openwrt_main" ]]; then
+            CONFIG_DIR="config/openwrt_main"
+          elif [[ -d "config/immortalwrt_master" ]]; then
+            CONFIG_DIR="config/immortalwrt_master"
+          else
+            echo "Error: No config directory found"
+            ls -la config/ || true
+            exit 1
+          fi
+          echo "CONFIG_DIR=${CONFIG_DIR}" >> ${GITHUB_ENV}
+          echo "FEEDS_CONF=${CONFIG_DIR}/feeds.conf.default" >> ${GITHUB_ENV}
+          echo "CONFIG_FILE=${CONFIG_DIR}/config" >> ${GITHUB_ENV}
+          echo "DIY_P1_SH=${CONFIG_DIR}/diy-part1.sh" >> ${GITHUB_ENV}
+          echo "DIY_P2_SH=${CONFIG_DIR}/diy-part2.sh" >> ${GITHUB_ENV}
+          echo "Using config dir: ${CONFIG_DIR}"
+
+      - name: Initialize the build environment
+        id: init
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          docker rmi -f $(docker images -q) 2>/dev/null || true
+          [[ -n "${AGENT_TOOLSDIRECTORY}" ]] && sudo rm -rf "${AGENT_TOOLSDIRECTORY}"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android 2>/dev/null
+          sudo swapoff -a
+          sudo rm -f /swapfile /mnt/swapfile
+          sudo apt-get -y update
+          sudo apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+          sudo apt-get -y install $(curl -fsSL https://ophub.org/ubuntu2404-make-openwrt-depends)
+          sudo systemctl daemon-reload
+          sudo apt-get -y autoremove --purge
+          sudo apt-get clean
+          sudo sed -i '/NVM_DIR/d;/skel/d' /root/{.bashrc,.profile}
+          sudo rm -rf ~/{.cargo,.dotnet,.rustup}
+          sudo timedatectl set-timezone "${TZ:-Etc/UTC}"
+          sudo ntpdate ntp.ubuntu.com 0.pool.ntp.org || true
+          sudo timedatectl set-ntp true
+          date -u
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Create virtual disk for extended storage
+        id: disk
+        run: |
+          root_avail=$(df --block-size=1G / | tail -1 | awk '{print $4}')
+          root_size=$(( root_avail - 4 ))
+          [[ "${root_size}" -gt 0 ]] || { echo "Error: Insufficient space"; exit 1; }
+          sudo truncate -s "${root_size}"G /root.img
+          build_dev=$(sudo losetup --find --show /root.img)
+          sudo mkfs.xfs -f -i sparse=0 -b size=4096 "${build_dev}"
+          sudo mkdir -p /builder
+          sudo mount "${build_dev}" /builder
+          sudo chown -R runner:runner /builder
+          df -Th
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Clone FanchmWrt source
+        id: codes
+        working-directory: /builder
+        if: ${{ steps.init.outputs.status == 'success' && !cancelled() }}
+        run: |
+          FW_BRANCH="${{ inputs.fanchmwrt_branch }}"
+          REPO_URL="https://github.com/fanchmwrt/fanchmwrt"
+          git clone -q --single-branch --depth=1 --branch="${FW_BRANCH}" ${REPO_URL} openwrt
+          ln -sf /builder/openwrt ${{ github.workspace }}/openwrt
+          echo "build_tag=FanchmWrt_rockdd_${FW_BRANCH}_$(date +"%Y.%m")" >> ${GITHUB_ENV}
+          echo -e "REPO_URL: [ ${REPO_URL} ]\nBranch: [ ${FW_BRANCH} ]"
+          df -hT ${PWD}
+          echo "REPO_URL=${REPO_URL}" >> ${GITHUB_ENV}
+          echo "REPO_NAME=fanchmwrt" >> ${GITHUB_ENV}
+          echo "REPO_BRANCH=${FW_BRANCH}" >> ${GITHUB_ENV}
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Load custom feeds
+        run: |
+          [[ -f "${FEEDS_CONF}" ]] && cp -f ${FEEDS_CONF} openwrt/feeds.conf.default
+          [[ -f "${DIY_P1_SH}" ]] && chmod +x ${DIY_P1_SH}
+          cd openwrt/
+          [[ -f "${{ github.workspace }}/${DIY_P1_SH}" ]] && ${{ github.workspace }}/${DIY_P1_SH}
+
+      - name: Update feeds
+        run: cd openwrt/ && ./scripts/feeds update -a
+
+      - name: Install feeds
+        run: cd openwrt/ && ./scripts/feeds install -a
+
+      - name: Load custom configuration
+        run: |
+          [[ -d "files" ]] && mv -f files openwrt/files
+          [[ -e "${CONFIG_FILE}" ]] && cp -f ${CONFIG_FILE} openwrt/.config
+          [[ -f "${DIY_P2_SH}" ]] && chmod +x ${DIY_P2_SH}
+          cd openwrt/
+          [[ -f "${{ github.workspace }}/${DIY_P2_SH}" ]] && ${{ github.workspace }}/${DIY_P2_SH} "${{ inputs.openwrt_ip }}" "${{ inputs.use_ccache }}"
+
+      # ============================================
+      # 自定义：应用额外包配置
+      # ============================================
+      - name: Apply custom packages
+        run: |
+          cd openwrt/
+          OPENCLASH_INPUT="${{ inputs.openclash }}"
+
+          # OpenClash（fanchmwrt 源可能不含，按需添加）
+          if [[ "${OPENCLASH_INPUT}" == "yes" ]]; then
+            echo "Enabling OpenClash..."
+            # 尝试启用，如果 feed 不存在会在 defconfig 时被忽略
+            echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
+          fi
+
+          # RTL8822BE WiFi 驱动
+          echo "Enabling RTL8822BE driver..."
+          echo "CONFIG_PACKAGE_kmod-rtw88-8822be=y" >> .config
+
+          # wpad（支持 5GHz AC 模式）
+          echo "CONFIG_PACKAGE_wpad-mesh-openssl=y" >> .config
+          echo "CONFIG_PACKAGE_wpa-cli=y" >> .config
+
+          echo "=== Custom packages applied ==="
+
+      - name: Download package
+        id: package
+        run: |
+          cd openwrt/
+          make defconfig
+          make download -j8
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Get FanchmWrt source commit hash
+        id: openwrthash
+        run: |
+          api_url="https://api.github.com/repos/fanchmwrt/fanchmwrt/git/ref/heads/${{ env.REPO_BRANCH }}"
+          source_hash=$(curl -fsSL -m 20 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              ${api_url} |
+              jq -r '.object.sha')
+          [[ -z "${source_hash}" || "${source_hash}" == "null" ]] && source_hash="${{ github.sha }}"
+          echo "source_hash=${source_hash}" >> ${GITHUB_ENV}
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Cache ccache
+        uses: actions/cache@v5
+        with:
+          path: /builder/openwrt/.ccache
+          key: openwrt-fanchmwrt-${{ env.source_hash }}
+          restore-keys: |
+            openwrt-fanchmwrt-
+
+      - name: Compile the FanchmWrt firmware
+        id: compile
+        run: |
+          cd openwrt/
+          echo -e "Compiling with $(nproc) threads"
+          make -j$(($(nproc) + 1)) V=s || make -j1 || make -j1 V=s
+
+          echo -e "ccache statistics:"
+          ccache -s 2>/dev/null
+          echo -e "ccache directory size:"
+          du -sh $(pwd)/.ccache 2>/dev/null || echo "No ccache directory found."
+
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Clean up build files and reclaim disk space
+        id: clean
+        if: ${{ steps.compile.outputs.status == 'success' && !cancelled() }}
+        run: |
+          cd openwrt/
+          [[ -d "output" ]] || mkdir output
+          ls -alh bin/targets/*/*/* || true
+          cp -f bin/targets/*/*/*-generic-rootfs.tar.gz output/
+          cp -f .config output/config
+          ls -A | grep -vE '^(output|\.ccache)$' | xargs rm -rf || true
+          df -hT ${PWD}
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Upload FanchmWrt rootfs to Release
+        uses: ophub/upload-to-releases@main
+        if: ${{ steps.clean.outputs.status == 'success' && !cancelled() }}
+        with:
+          tag: ${{ env.build_tag }}
+          artifacts: openwrt/output/*
+          allow_updates: true
+          remove_artifacts: false
+          replaces_artifacts: true
+          make_latest: true
+          gh_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package FanchmWrt for rockdd board
+        if: ${{ steps.clean.outputs.status == 'success' && !cancelled() }}
+        uses: ./
+        with:
+          openwrt_path: openwrt/output/*rootfs.tar.gz
+          openwrt_ip: ${{ inputs.openwrt_ip }}
+          openwrt_board: rockdd
+          openwrt_kernel: ${{ inputs.openwrt_kernel }}
+          auto_kernel: ${{ inputs.auto_kernel }}
+          kernel_repo: ${{ inputs.kernel_repo }}
+          kernel_usage: ${{ inputs.kernel_usage }}
+          builder_name: ${{ inputs.builder_name }}
+
+      - name: Upload packaged FanchmWrt to Release
+        uses: ophub/upload-to-releases@main
+        if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}
+        with:
+          tag: ${{ env.build_tag }}
+          artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*
+          allow_updates: true
+          remove_artifacts: false
+          replaces_artifacts: true
+          make_latest: true
+          gh_token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            ### FanchmWrt for rockdd (RK3399)
+            - Source: [fanchmwrt](${{ env.REPO_URL }}/tree/${{ env.REPO_BRANCH }})
+            - Board: `rockdd` (RK3399, LPDDR4 4GB, PCIe WiFi RTL8822BE)
+            - Default IP: `${{ inputs.openwrt_ip }}`
+            - Default username: `root`
+            - Default password: `${{ inputs.root_password }}`
+            ### Install to EMMC
+            - Login to OpenWrt → `System` → `Amlogic Service` → `Install OpenWrt`
+            ### Applicable Platform
+            - `arm64`
