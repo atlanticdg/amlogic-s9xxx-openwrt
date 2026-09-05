@@ -331,9 +331,9 @@ jobs:
           echo "u-boot.itb replaced"
 
           # ============================================
-          # 替换 boot 分区中的 DTB 为 rockdd 专属版本
+          # 替换 kernel.img（FIT 镜像）中的 DTB 为 rockdd 版本
           # ============================================
-          echo "=== Replacing DTB with rockdd version ==="
+          echo "=== Replacing DTB in kernel.img FIT image ==="
 
           # 找到编译好的 rockdd DTB
           ROCKDD_DTB=$(find build_dir -path "*/arch/arm64/boot/dts/rockchip/rk3399-rockdd.dtb" 2>/dev/null | head -1)
@@ -352,6 +352,11 @@ jobs:
             exit 1
           fi
 
+          # 安装 u-boot-tools（mkimage 和 dumpimage）
+          echo "=== Installing u-boot-tools ==="
+          sudo apt-get install -y u-boot-tools 2>/dev/null || true
+          which mkimage && which dumpimage
+
           echo "=== New image partition info ==="
           fdisk -l "${IMG}" 2>/dev/null || true
 
@@ -363,40 +368,106 @@ jobs:
               echo "Boot partition files (before):"
               ls -la /tmp/bootmnt/
 
-              # 找到现有的 DTB 文件（可能在根目录或 dtb/ 子目录）
-              EXISTING_DTB=$(find /tmp/bootmnt -name "rk3399-rock-pi-4*.dtb" 2>/dev/null | head -1)
-              echo "Existing DTB: ${EXISTING_DTB}"
+              KERNEL_IMG=/tmp/bootmnt/kernel.img
 
-              if [[ -n "${EXISTING_DTB}" ]]; then
-                DTB_DIR=$(dirname "${EXISTING_DTB}")
-                DTB_BASENAME=$(basename "${EXISTING_DTB}")
+              if [[ -f "${KERNEL_IMG}" ]]; then
+                echo "=== kernel.img found, examining FIT structure ==="
+                dumpimage -l "${KERNEL_IMG}" || echo "dumpimage -l failed, trying file command"
+                file "${KERNEL_IMG}"
 
-                # 备份原 DTB
-                sudo cp "${EXISTING_DTB}" "${EXISTING_DTB}.bak"
-                echo "Backed up original DTB to ${DTB_BASENAME}.bak"
+                # 提取 FIT 镜像中的各个组件
+                FIT_DIR=/tmp/fit_extract
+                rm -rf "${FIT_DIR}"
+                mkdir -p "${FIT_DIR}"
 
-                # 复制 rockdd DTB（用 rock-pi-4a 的文件名覆盖，确保 extlinux.conf 能找到）
-                sudo cp "${ROCKDD_DTB}" "${EXISTING_DTB}"
-                echo "Replaced ${DTB_BASENAME} with rockdd DTB"
+                # 用 dumpimage 提取所有镜像
+                cd "${FIT_DIR}"
+                # 尝试列出并提取配置
+                CONFIGS=$(dumpimage -l "${KERNEL_IMG}" 2>/dev/null | grep "^  Configuration" | sed 's/.*(\(.*\))/\1/')
+                echo "FIT configurations: ${CONFIGS}"
 
-                # 同时放一份原名的文件，方便调试
-                sudo cp "${ROCKDD_DTB}" "${DTB_DIR}/rk3399-rockdd.dtb"
-                echo "Also copied as rk3399-rockdd.dtb"
+                # 提取 kernel
+                dumpimage -T flat_dt -p 0 -o kernel.bin "${KERNEL_IMG}" 2>/dev/null && echo "Extracted kernel" || echo "Failed to extract kernel"
+                # 提取 fdt（DTB）- 通常是第二个镜像
+                dumpimage -T flat_dt -p 1 -o original.dtb "${KERNEL_IMG}" 2>/dev/null && echo "Extracted fdt/dtb" || echo "Failed to extract fdt"
+
+                ls -la "${FIT_DIR}"/
+
+                # 检查原 DTB 的信息
+                if [[ -f "${FIT_DIR}/original.dtb" ]]; then
+                  echo "Original DTB size: $(du -h "${FIT_DIR}/original.dtb" | cut -f1)"
+                  strings "${FIT_DIR}/original.dtb" | grep -i "rock.*pi\|model\|compatible" | head -10
+                fi
+
+                # 用 rockdd DTB 替换并重新打包 FIT 镜像
+                echo "=== Rebuilding kernel.img with rockdd DTB ==="
+
+                # 创建 ITS 文件（FIT image source）
+                cat > /tmp/kernel.its << 'FIT_EOF'
+/dts-v1/;
+
+/ {
+	description = "FIT image with rockdd DTB";
+	#address-cells = <1>;
+
+	images {
+		kernel {
+			description = "Linux kernel";
+			data = /incbin/("kernel.bin");
+			type = "kernel";
+			arch = "arm64";
+			os = "linux";
+			compression = "none";
+			load = <0x00280000>;
+			entry = <0x00280000>;
+			hash-1 {
+				algo = "sha256";
+			};
+		};
+		fdt {
+			description = "rockdd device tree";
+			data = /incbin/("rockdd.dtb");
+			type = "flat_dt";
+			arch = "arm64";
+			compression = "none";
+			hash-1 {
+				algo = "sha256";
+			};
+		};
+	};
+
+	configurations {
+		default = "conf-rockdd";
+		conf-rockdd {
+			description = "Boot with rockdd DTB";
+			kernel = "kernel";
+			fdt = "fdt";
+		};
+	};
+};
+FIT_EOF
+
+                cp "${ROCKDD_DTB}" "${FIT_DIR}/rockdd.dtb"
+
+                if [[ -f "${FIT_DIR}/kernel.bin" ]]; then
+                  cd "${FIT_DIR}"
+                  mkimage -f /tmp/kernel.its /tmp/kernel_new.img
+                  if [[ -f /tmp/kernel_new.img ]]; then
+                    echo "New kernel.img size: $(du -h /tmp/kernel_new.img | cut -f1)"
+                    dumpimage -l /tmp/kernel_new.img
+                    # 替换回去
+                    sudo cp /tmp/kernel_new.img "${KERNEL_IMG}"
+                    echo "kernel.img replaced with rockdd version"
+                  else
+                    echo "ERROR: Failed to build new FIT image"
+                  fi
+                else
+                  echo "ERROR: kernel.bin not extracted, cannot rebuild FIT"
+                fi
+
+                cd /
               else
-                # 没找到 rock-pi-4 的 DTB，直接放进去
-                sudo cp "${ROCKDD_DTB}" /tmp/bootmnt/rk3399-rockdd.dtb
-                echo "Copied rockdd DTB to boot partition root"
-              fi
-
-              # 检查并更新 extlinux.conf（如果有）
-              EXTLINUX=$(find /tmp/bootmnt -name "extlinux.conf" 2>/dev/null | head -1)
-              if [[ -n "${EXTLINUX}" ]]; then
-                echo "extlinux.conf content (before):"
-                cat "${EXTLINUX}"
-                # 把 FDT 指向 rockdd 的 DTB
-                sudo sed -i 's/rk3399-rock-pi-4[a-z]*\.dtb/rk3399-rockdd.dtb/g' "${EXTLINUX}"
-                echo "extlinux.conf content (after):"
-                cat "${EXTLINUX}"
+                echo "ERROR: kernel.img not found in boot partition!"
               fi
 
               echo "Boot partition files (after):"
@@ -404,7 +475,7 @@ jobs:
 
               sync
               sudo umount /tmp/bootmnt
-              echo "DTB replacement done, unmounted boot partition"
+              echo "FIT DTB replacement done, unmounted boot partition"
             } || echo "Could not mount boot partition"
           fi
 
