@@ -402,50 +402,11 @@ jobs:
                 # 用 rockdd DTB 替换并重新打包 FIT 镜像
                 echo "=== Rebuilding kernel.img with rockdd DTB ==="
 
-                # 创建 ITS 文件（FIT image source）
-                cat > /tmp/kernel.its << 'FIT_EOF'
-/dts-v1/;
-
-/ {
-	description = "FIT image with rockdd DTB";
-	#address-cells = <1>;
-
-	images {
-		kernel {
-			description = "Linux kernel";
-			data = /incbin/("kernel.bin");
-			type = "kernel";
-			arch = "arm64";
-			os = "linux";
-			compression = "none";
-			load = <0x00280000>;
-			entry = <0x00280000>;
-			hash-1 {
-				algo = "sha256";
-			};
-		};
-		fdt {
-			description = "rockdd device tree";
-			data = /incbin/("rockdd.dtb");
-			type = "flat_dt";
-			arch = "arm64";
-			compression = "none";
-			hash-1 {
-				algo = "sha256";
-			};
-		};
-	};
-
-	configurations {
-		default = "conf-rockdd";
-		conf-rockdd {
-			description = "Boot with rockdd DTB";
-			kernel = "kernel";
-			fdt = "fdt";
-		};
-	};
-};
-FIT_EOF
+                # 用 base64 解码生成 ITS 文件（避免 YAML 缩进问题）
+                ITS_B64="L2R0cy12MS87CgovIHsKCWRlc2NyaXB0aW9uID0gIkZJVCBpbWFnZSB3aXRoIHJvY2tkZCBEVEIiOwoJI2FkZHJlc3MtY2VsbHMgPSA8MT47CgoJaW1hZ2VzIHsKCQlrZXJuZWwgewoJCQlkZXNjcmlwdGlvbiA9ICJMaW51eCBrZXJuZWwiOwoJCQlkYXRhID0gL2luY2Jpbi8oImtlcm5lbC5iaW4iKTsKCQkJdHlwZSA9ICJrZXJuZWwiOwoJCQlhcmNoID0gImFybTY0IjsKCQkJb3MgPSAibGludXgiOwoJCQljb21wcmVzc2lvbiA9ICJub25lIjsKCQkJbG9hZCA9IDwweDAwMjgwMDAwPjsKCQkJZW50cnkgPSA8MHgwMDI4MDAwMD47CgkJCWhhc2gtMSB7CgkJCQlhbGdvID0gInNoYTI1NiI7CgkJCX07CgkJfTsKCQlmZHQgewoJCQlkZXNjcmlwdGlvbiA9ICJyb2NrZGQgZGV2aWNlIHRyZWUiOwoJCQlkYXRhID0gL2luY2Jpbi8oInJvY2tkZC5kdGIiKTsKCQkJdHlwZSA9ICJmbGF0X2R0IjsKCQkJYXJjaCA9ICJhcm02NCI7CgkJCWNvbXByZXNzaW9uID0gIm5vbmUiOwoJCQloYXNoLTEgewoJCQkJYWxnbyA9ICJzaGEyNTYiOwoJCQl9OwoJCX07Cgl9OwoKCWNvbmZpZ3VyYXRpb25zIHsKCQlkZWZhdWx0ID0gImNvbmYtcm9ja2RkIjsKCQljb25mLXJvY2tkZCB7CgkJCWRlc2NyaXB0aW9uID0gIkJvb3Qgd2l0aCByb2NrZGQgRFRCIjsKCQkJa2VybmVsID0gImtlcm5lbCI7CgkJCWZkdCA9ICJmZHQiOwoJCX07Cgl9Owp9Owo="
+                echo "${ITS_B64}" | base64 -d > /tmp/kernel.its
+                echo "ITS file generated:"
+                cat /tmp/kernel.its
 
                 cp "${ROCKDD_DTB}" "${FIT_DIR}/rockdd.dtb"
 
