@@ -1,0 +1,437 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+/dts-v1/;
+
+#include <dt-bindings/clock/imx8mn-clock.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/pwm/pwm.h>
+#include "imx8mn.dtsi"
+
+/ {
+	model = "B&O Mozart 2 Seoul Rev. C";
+	compatible = "beo,mozart2-seoul-revc", "beo,mozart2-seoul",
+		     "beo,mozart2", "fsl,imx8mn";
+
+	chosen {
+		stdout-path = &uart1;
+	};
+
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0x00000000 0x40000000 0x00000000 0x40000000>;
+	};
+};
+
+/* === 时钟 === */
+&clk_ext1 {
+	clock-frequency = <12288000>;
+};
+
+&clk_ext2 {
+	clock-frequency = <24000000>;
+};
+
+&clk_ext3 {
+	clock-frequency = <12000000>;
+};
+
+&clk_ext4 {
+	clock-frequency = <24576000>;
+};
+
+&osc_32k {
+	clock-frequency = <32768>;
+};
+
+&osc_24m {
+	clock-frequency = <24000000>;
+};
+
+/* === A53 核心电源 === */
+&A53_0 {
+	cpu-supply = <&buck2_reg>;
+};
+
+&A53_1 {
+	cpu-supply = <&buck2_reg>;
+};
+
+&A53_2 {
+	cpu-supply = <&buck2_reg>;
+};
+
+&A53_3 {
+	cpu-supply = <&buck2_reg>;
+};
+
+/* === I2C1 - PMIC 总线 === */
+&i2c1 {
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_i2c1>;
+	status = "okay";
+
+	pmic: pmic@25 {
+		compatible = "nxp,pca9450b";
+		reg = <0x25>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_pmicirq>;
+		interrupt-parent = <&gpio4>;
+		interrupts = <24 IRQ_TYPE_LEVEL_LOW>;
+
+		regulators {
+			buck1_reg: BUCK1 {
+				regulator-name = "VDD_SOC";
+				regulator-min-microvolt = <850000>;
+				regulator-max-microvolt = <950000>;
+				regulator-boot-on;
+				regulator-always-on;
+			};
+
+			buck2_reg: BUCK2 {
+				regulator-name = "VDD_ARM_0V9";
+				regulator-min-microvolt = <850000>;
+				regulator-max-microvolt = <1000000>;
+				regulator-boot-on;
+				regulator-always-on;
+			};
+
+			buck4_reg: BUCK4 {
+				regulator-name = "VDD_3V3";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-boot-on;
+				regulator-always-on;
+			};
+
+			buck5_reg: BUCK5 {
+				regulator-name = "VDD_1V8";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+				regulator-boot-on;
+				regulator-always-on;
+			};
+
+			buck6_reg: BUCK6 {
+				regulator-name = "NVCC_DRAM_1V1";
+				regulator-min-microvolt = <1100000>;
+				regulator-max-microvolt = <1100000>;
+				regulator-boot-on;
+				regulator-always-on;
+			};
+
+			ldo1_reg: LDO1 {
+				regulator-name = "NVCC_SNVS_1V8";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+				regulator-boot-on;
+				regulator-always-on;
+			};
+
+			ldo2_reg: LDO2 {
+				regulator-name = "VDD_SNVS_0V8";
+				regulator-min-microvolt = <800000>;
+				regulator-max-microvolt = <800000>;
+				regulator-boot-on;
+				regulator-always-on;
+			};
+
+			ldo3_reg: LDO3 {
+				regulator-name = "VDDA_1V8";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+				regulator-boot-on;
+				regulator-always-on;
+			};
+
+			ldo4_reg: LDO4 {
+				regulator-name = "VDD_PHY_1V2";
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <1200000>;
+				regulator-boot-on;
+				regulator-always-on;
+			};
+
+			ldo5_reg: LDO5 {
+				regulator-name = "NVCC_SD2";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-boot-on;
+				regulator-always-on;
+			};
+		};
+	};
+};
+
+/* === I2C4 - 外设总线 === */
+&i2c4 {
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_i2c4>;
+	status = "okay";
+};
+
+/* === UART1 - 控制台 === */
+&uart1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_uart1>;
+	status = "okay";
+};
+
+/* === UART2 - 蓝牙 === */
+&uart2 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_uart2>;
+	status = "okay";
+};
+
+/* === uSDHC1 - eMMC === */
+&usdhc1 {
+	pinctrl-names = "default", "state_100mhz", "state_200mhz";
+	pinctrl-0 = <&pinctrl_usdhc1>;
+	pinctrl-1 = <&pinctrl_usdhc1>;
+	pinctrl-2 = <&pinctrl_usdhc1>;
+	bus-width = <8>;
+	non-removable;
+	keep-power-in-suspend;
+	wakeup-source;
+	vmmc-supply = <&buck4_reg>;
+	vqmmc-supply = <&buck5_reg>;
+	no-sd;
+	no-sdio;
+	status = "okay";
+};
+
+/* === uSDHC2 - SDIO WiFi === */
+&usdhc2 {
+	pinctrl-names = "default", "state_100mhz", "state_200mhz";
+	pinctrl-0 = <&pinctrl_usdhc2>;
+	pinctrl-1 = <&pinctrl_usdhc2_100mhz>;
+	pinctrl-2 = <&pinctrl_usdhc2_200mhz>;
+	bus-width = <4>;
+	vmmc-supply = <&buck4_reg>;
+	vqmmc-supply = <&ldo5_reg>;
+	no-sd;
+	non-removable;
+	status = "okay";
+
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	wifi@1 {
+		compatible = "nxp,88w8987";
+		reg = <1>;
+	};
+};
+
+/* === uSDHC3 - 禁用 === */
+&usdhc3 {
+	status = "disabled";
+};
+
+/* === 以太网 FEC + RTL8365MB 交换机 === */
+&fec1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_fec1>;
+	phy-mode = "rgmii-id";
+	fsl,magic-packet;
+	status = "okay";
+
+	mdio: mdio {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* Realtek RTL8365MB 交换机 - MDIO 地址 0x1d (29) */
+		switch@1d {
+			compatible = "realtek,rtl8365mb";
+			reg = <0x1d>;
+			interrupt-parent = <&gpio1>;
+			interrupts = <14 IRQ_TYPE_LEVEL_LOW>;
+			reset-gpios = <&gpio1 13 GPIO_ACTIVE_LOW>;
+			realtek,disable-leds;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					label = "cpu";
+					ethernet = <&fec1>;
+					phy-mode = "rgmii-id";
+
+					fixed-link {
+						speed = <1000>;
+						full-duplex;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+					label = "lan1";
+				};
+
+				port@2 {
+					reg = <2>;
+					label = "lan2";
+				};
+
+				port@3 {
+					reg = <3>;
+					label = "lan3";
+				};
+
+				port@4 {
+					reg = <4>;
+					label = "lan4";
+				};
+			};
+		};
+	};
+};
+
+/* === USB OTG === */
+&usbotg1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_usbotg>;
+	dr_mode = "otg";
+	status = "okay";
+};
+
+&usbphynop1 {
+	status = "okay";
+};
+
+/* === SNVS 电源按键 === */
+&snvs_pwrkey {
+	status = "okay";
+};
+
+/* === Pinmux 配置（使用从原始 DTB 提取的原始寄存器值） === */
+/*
+ * 每个 pin 配置为 6 个 u32:
+ *   mux_reg, conf_reg, input_reg, mux_mode, input_val, config
+ *
+ * 注：这些原始值保证与出厂固件 100% 一致
+ * 建议在正式内核树中替换为 MX8MN_IOMUXC_* 宏以提高可读性
+ */
+&iomuxc {
+	pinctrl_fec1: fec1grp {
+		fsl,pins = <
+			0x0068 0x02d0 0x0000 0x00 0x00 0x0003
+			0x006c 0x02d4 0x04c0 0x00 0x01 0x0003
+			0x0080 0x02e8 0x0000 0x00 0x00 0x001f
+			0x0084 0x02ec 0x0000 0x00 0x00 0x001f
+			0x007c 0x02e4 0x0000 0x00 0x00 0x001f
+			0x0078 0x02e0 0x0000 0x00 0x00 0x001f
+			0x0074 0x02dc 0x0000 0x00 0x00 0x001f
+			0x0070 0x02d8 0x0000 0x00 0x00 0x001f
+			0x0088 0x02f0 0x0574 0x00 0x00 0x0091
+			0x008c 0x02f4 0x0000 0x00 0x00 0x0091
+			0x0090 0x02f8 0x057c 0x00 0x00 0x0091
+			0x0094 0x02fc 0x0554 0x00 0x00 0x0091
+			0x0098 0x0300 0x0000 0x00 0x00 0x0091
+			0x009c 0x0304 0x0000 0x00 0x00 0x0091
+		>;
+	};
+
+	pinctrl_eth_switch: eth-switch-grp {
+		fsl,pins = <
+			0x0048 0x02b0 0x0000 0x00 0x00 0x0000
+			0x01ec 0x0454 0x0000 0x05 0x00 0x0000
+		>;
+	};
+
+	pinctrl_i2c1: i2c1grp {
+		fsl,pins = <
+			0x0214 0x047c 0x055c 0x00 0x00 0x400001c3
+			0x0218 0x0480 0x056c 0x00 0x00 0x400001c3
+		>;
+	};
+
+	pinctrl_i2c4: i2c4grp {
+		fsl,pins = <
+			0x022c 0x0494 0x05d4 0x00 0x00 0x400001c3
+			0x0230 0x0498 0x058c 0x00 0x00 0x400001c3
+		>;
+	};
+
+	pinctrl_pmicirq: pmicirqgrp {
+		fsl,pins = <
+			0x0034 0x029c 0x0000 0x00 0x00 0x0141
+		>;
+	};
+
+	pinctrl_uart1: uart1grp {
+		fsl,pins = <
+			0x0234 0x049c 0x04f4 0x00 0x00 0x0140
+			0x0238 0x04a0 0x0000 0x00 0x00 0x0140
+		>;
+	};
+
+	pinctrl_uart2: uart2grp {
+		fsl,pins = <
+			0x023c 0x04a4 0x04fc 0x00 0x00 0x0140
+			0x0240 0x04a8 0x0000 0x00 0x00 0x0140
+		>;
+	};
+
+	pinctrl_usdhc1: usdhc1grp {
+		fsl,pins = <
+			0x00a0 0x0308 0x0000 0x00 0x00 0x0196
+			0x00a4 0x030c 0x0000 0x00 0x00 0x01d6
+			0x00a8 0x0310 0x0000 0x00 0x00 0x01d6
+			0x00ac 0x0314 0x0000 0x00 0x00 0x01d6
+			0x00b0 0x0318 0x0000 0x00 0x00 0x01d6
+			0x00b4 0x031c 0x0000 0x00 0x00 0x01d6
+		>;
+	};
+
+	pinctrl_usdhc1_gpio: usdhc1-gpiogrp {
+		fsl,pins = <
+			0x00c8 0x0330 0x0000 0x05 0x00 0x0160
+			0x0028 0x0290 0x0000 0x00 0x00 0x0160
+		>;
+	};
+
+	pinctrl_usdhc2: usdhc2grp {
+		fsl,pins = <
+			0x00d4 0x033c 0x0000 0x00 0x00 0x0190
+			0x00d8 0x0340 0x0000 0x00 0x00 0x01d0
+			0x00dc 0x0344 0x0000 0x00 0x00 0x01d0
+			0x00e0 0x0348 0x0000 0x00 0x00 0x01d0
+			0x00e4 0x034c 0x0000 0x00 0x00 0x01d0
+			0x00e8 0x0350 0x0000 0x00 0x00 0x01d0
+		>;
+	};
+
+	pinctrl_usdhc2_100mhz: usdhc2-100mhzgrp {
+		fsl,pins = <
+			0x00d4 0x033c 0x0000 0x00 0x00 0x0194
+			0x00d8 0x0340 0x0000 0x00 0x00 0x01d4
+			0x00dc 0x0344 0x0000 0x00 0x00 0x01d4
+			0x00e0 0x0348 0x0000 0x00 0x00 0x01d4
+			0x00e4 0x034c 0x0000 0x00 0x00 0x01d4
+			0x00e8 0x0350 0x0000 0x00 0x00 0x01d4
+		>;
+	};
+
+	pinctrl_usdhc2_200mhz: usdhc2-200mhzgrp {
+		fsl,pins = <
+			0x00d4 0x033c 0x0000 0x00 0x00 0x0196
+			0x00d8 0x0340 0x0000 0x00 0x00 0x01d6
+			0x00dc 0x0344 0x0000 0x00 0x00 0x01d6
+			0x00e0 0x0348 0x0000 0x00 0x00 0x01d6
+			0x00e4 0x034c 0x0000 0x00 0x00 0x01d6
+			0x00e8 0x0350 0x0000 0x00 0x00 0x01d6
+		>;
+	};
+
+	pinctrl_usbotg: usbotg-grp {
+		fsl,pins = <
+			0x0050 0x02b8 0x0000 0x00 0x00 0x0156
+		>;
+	};
+};
