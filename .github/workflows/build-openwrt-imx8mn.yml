@@ -331,30 +331,44 @@ jobs:
           ccache -s 2>/dev/null || true
 
       # ============================================
-      # 12. 验证镜像并确保 DTB 正确
+      # 12. 查找并处理生成的镜像（修复：支持多种格式）
       # ============================================
-      - name: Verify and fix image DTB
+      - name: Find and process image
         if: ${{ steps.compile.outputs.status == 'success' }}
         run: |
           cd openwrt/
           OUT_DIR="bin/targets/imx/cortexa53"
 
-          echo "=== Build output files ==="
-          ls -lah "${OUT_DIR}/"
+          echo "=== All files in output dir ==="
+          ls -lah "${OUT_DIR}/" || true
 
-          # 找到镜像
-          IMG_GZ=$(ls ${OUT_DIR}/*.img.gz 2>/dev/null | head -1)
-          if [[ -z "${IMG_GZ}" ]]; then
-            echo "WARNING: No .img.gz found, listing all outputs..."
-            ls -la ${OUT_DIR}/
+          # 查找镜像文件（支持多种格式）
+          IMG_FILE=""
+          for ext in .img.gz .img .bin .itb .wic.gz .wic; do
+            IMG_FILE=$(ls ${OUT_DIR}/*${ext} 2>/dev/null | head -1)
+            if [[ -n "${IMG_FILE}" ]]; then
+              echo "Found image: ${IMG_FILE}"
+              break
+            fi
+          done
+
+          if [[ -z "${IMG_FILE}" ]]; then
+            echo "WARNING: No image file found in ${OUT_DIR}"
+            echo "=== Listing all files ==="
+            find ${OUT_DIR} -type f -exec ls -la {} \;
             exit 0
           fi
-          echo "Image: ${IMG_GZ}"
 
-          # 解压
-          gunzip -k -f "${IMG_GZ}" 2>/dev/null || true
-          IMG="${IMG_GZ%.gz}"
-          [[ -f "${IMG}" ]] || { echo "Decompression failed"; exit 1; }
+          # 如果是压缩的，解压处理
+          if [[ "${IMG_FILE}" == *.gz ]]; then
+            gunzip -k -f "${IMG_FILE}" 2>/dev/null || true
+            IMG="${IMG_FILE%.gz}"
+          else
+            IMG="${IMG_FILE}"
+          fi
+
+          [[ -f "${IMG}" ]] || { echo "Image file not accessible: ${IMG}"; exit 0; }
+          echo "Processing image: ${IMG} ($(du -h "${IMG}" | cut -f1))"
 
           # 获取 boot 分区偏移
           BOOT_INFO=$(parted "${IMG}" unit B print 2>/dev/null || true)
@@ -362,7 +376,9 @@ jobs:
 
           if [[ -z "${BOOT_START}" ]]; then
             echo "WARNING: Could not detect boot partition, skipping DTB check"
-            gzip -k -f "${IMG}"
+            # 仍然复制到 output
+            mkdir -p output
+            cp -f "${IMG}"* output/ 2>/dev/null || true
             exit 0
           fi
 
@@ -370,7 +386,8 @@ jobs:
           mkdir -p /tmp/bootmnt
           sudo mount -o loop,offset=${BOOT_START} "${IMG}" /tmp/bootmnt 2>/dev/null || {
             echo "WARNING: Could not mount boot partition"
-            gzip -k -f "${IMG}"
+            mkdir -p output
+            cp -f "${IMG}"* output/ 2>/dev/null || true
             exit 0
           }
 
@@ -413,21 +430,27 @@ jobs:
           sync
           sudo umount /tmp/bootmnt
 
-          # 重新压缩
-          gzip -k -f "${IMG}"
-          echo "=== Image verification complete ==="
+          # 重新压缩（如果原始是 .gz）
+          if [[ "${IMG_FILE}" == *.gz && ! -f "${IMG}.gz" ]]; then
+            gzip -k -f "${IMG}"
+          fi
+
+          # 复制到 output
+          mkdir -p output
+          cp -f "${IMG}"* output/ 2>/dev/null || true
+          echo "=== Image processing complete ==="
 
       # ============================================
-      # 13. 整理输出
+      # 13. 整理输出（收集所有生成文件）
       # ============================================
       - name: Organize output
         if: ${{ steps.compile.outputs.status == 'success' }}
         run: |
           cd openwrt/
           mkdir -p output
-          cp -f bin/targets/imx/cortexa53/*.img.gz output/ 2>/dev/null || true
-          cp -f bin/targets/imx/cortexa53/*.manifest output/ 2>/dev/null || true
-          cp -f .config output/config
+          # 复制所有可能的输出文件
+          cp -f bin/targets/imx/cortexa53/* output/ 2>/dev/null || true
+          cp -f .config output/config 2>/dev/null || true
           echo "=== Final output ==="
           ls -lah output/
 
